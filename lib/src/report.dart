@@ -10,18 +10,25 @@ const _limits = [
   'A deferred hop only creates a closure or passes a tear-off; whether it '
       'runs is not established.',
   'Conditions are source expressions, never evaluated values.',
-  'Redirects, deep links, shell branch switches and dynamic destinations are '
-      'not candidates.',
+  'Redirects, deep links and fully dynamic destinations are not candidates.',
 ];
 
 /// One way to reach a navigation call: an incoming chain, preceded by the
-/// path that builds the widget binding its callback root when there is one.
+/// path that builds the widget binding its callback root when there is one,
+/// with one destination value or `goBranch` index.
 class _Path {
-  _Path(this.chain, this.build, this.destination);
+  _Path(this.chain, this.build, this.destination, this.branch,
+      {this.alternative = false});
 
   final Chain chain;
   final Chain? build;
-  final Evaluation destination;
+  final Evaluation? destination;
+
+  /// The `goBranch` index, when the call is one and the index is known.
+  final int? branch;
+
+  /// Whether [destination] is one of several values the call can produce.
+  final bool alternative;
 }
 
 class _Site {
@@ -38,12 +45,26 @@ List<_Site> _sites(CodeIndex index) {
     final (chains, truncated) = index.chainsTo(site);
     final paths = <_Path>[];
     for (final chain in chains) {
-      final builds = index.buildPaths(chain);
+      final plain = index.destination(site, chain);
+      // Widget constructor calls matter only when the destination needs them.
+      final builds = index.buildPaths(chain,
+          widgets: site.kind != 'branch' && !plain.complete);
       for (final build in builds.isEmpty ? const <Chain?>[null] : builds) {
         final full = build == null
             ? chain
-            : Chain([...build.hops, ...chain.hops], chain.rootKind, chain.slot);
-        paths.add(_Path(chain, build, index.destination(site, full)));
+            : Chain([...build.hops, ...chain.hops], chain.rootKind, chain.slot,
+                chain.slotNode);
+        if (!index.feasible(full)) continue;
+        if (site.kind == 'branch') {
+          paths.add(_Path(chain, build, null, index.branchIndex(site, full)));
+          continue;
+        }
+        final destination =
+            build == null ? plain : index.destination(site, full);
+        for (final value in destination.expand()) {
+          paths.add(_Path(chain, build, value, null,
+              alternative: destination.alternatives != null));
+        }
       }
     }
     sites.add(_Site(site, paths, truncated));
@@ -51,20 +72,41 @@ List<_Site> _sites(CodeIndex index) {
   return sites;
 }
 
-/// Registered routes reached by [destination], by path or by route name.
-List<RouteDecl> _targets(
-    CodeIndex index, NavigationSite site, Evaluation destination) {
+/// Registered routes a path reaches, and whether only a location with
+/// unknown parts matched them.
+(List<RouteDecl>, bool templated) _targets(
+    CodeIndex index, NavigationSite site, _Path path) {
+  if (site.kind == 'branch') {
+    return (
+      [
+        for (final shell in index.shells)
+          for (final (i, route) in shell.indexed)
+            if (route != null && (path.branch == null || path.branch == i))
+              route,
+      ],
+      false,
+    );
+  }
+  final destination = path.destination!;
   if (site.named) {
     // An unevaluated name still matches a registration written the same way.
     final source = site.destination.toSource();
-    return index.routes
-        .where((r) => destination.complete
-            ? r.name == destination.text
-            : r.name == null && r.nameExpression?.toSource() == source)
-        .toList();
+    return (
+      index.routes
+          .where((r) => destination.complete
+              ? r.name == destination.text
+              : r.name == null && r.nameExpression?.toSource() == source)
+          .toList(),
+      false,
+    );
   }
-  final path = destination.path;
-  return path == null ? const [] : index.routesFor(path);
+  if (destination.path case final location?) {
+    return (index.routesFor(location), false);
+  }
+  if (destination.pathPattern case final pattern?) {
+    return (index.routesForPattern(pattern), true);
+  }
+  return (const [], false);
 }
 
 Map<String, Object?> routeList(CodeIndex index) => {
@@ -99,10 +141,10 @@ Map<String, Object?> check(CodeIndex index) {
     final unknown = <String>{};
     final unresolved = <String, String?>{};
     for (final path in s.paths) {
-      final destination = path.destination;
-      final targets = _targets(index, s.site, destination);
+      final (targets, _) = _targets(index, s.site, path);
       reached.addAll(targets);
-      if (targets.isNotEmpty) continue;
+      final destination = path.destination;
+      if (targets.isNotEmpty || destination == null) continue;
       final value = s.site.named
           ? (destination.complete ? destination.text : null)
           : destination.path;
@@ -148,7 +190,8 @@ Map<String, Object?> check(CodeIndex index) {
       });
     }
   }
-  final byPath = <String, List<RouteDecl>>{};
+  // Routes of different router configurations never conflict.
+  final byPath = <(String, AstNode?), List<RouteDecl>>{};
   for (final route in index.routes) {
     final path = route.path;
     if (path == null) {
@@ -161,7 +204,7 @@ Map<String, Object?> check(CodeIndex index) {
       });
       continue;
     }
-    (byPath[path] ??= []).add(route);
+    (byPath[(path, route.tree)] ??= []).add(route);
     if (reached.contains(route)) continue;
     final references = _references(index, route);
     findings.add({
@@ -173,14 +216,18 @@ Map<String, Object?> check(CodeIndex index) {
       if (references.isNotEmpty) 'referencedAt': references.take(5).toList(),
     });
   }
-  for (final MapEntry(key: path, value: routes) in byPath.entries) {
-    if (routes.length > 1) {
+  for (final MapEntry(key: (path, _), value: routes) in byPath.entries) {
+    // Copies of one registration under several parents are not duplicates.
+    final registrations = {for (final r in routes) r.node: r}.values.toList();
+    if (registrations.length > 1) {
       findings.add({
         'check': 'duplicate_route',
         'severity': 'warning',
         'route': path,
-        'at': routes.first.file.at(routes.first.node),
-        'alsoAt': [for (final r in routes.skip(1)) r.file.at(r.node)],
+        'at': registrations.first.file.at(registrations.first.node),
+        'alsoAt': [
+          for (final r in registrations.skip(1)) r.file.at(r.node),
+        ],
       });
     }
   }
@@ -201,6 +248,7 @@ Map<String, Object?> check(CodeIndex index) {
       'chains': sites.fold<int>(0, (n, s) => n + s.paths.length),
       'truncatedSites': sites.where((s) => s.truncated).length,
       'parseErrors': index.parseErrors.length,
+      if (index.skippedLinks > 0) 'skippedLinks': index.skippedLinks,
     },
     'findings': [
       ...findings.where((f) => f['severity'] == 'warning'),
@@ -210,31 +258,39 @@ Map<String, Object?> check(CodeIndex index) {
   };
 }
 
+/// Candidates for a route given by path (`/settings`) or by route name.
 Map<String, Object?> query(CodeIndex index, String target) {
+  final byName = !target.startsWith('/');
   final cut = target.indexOf(RegExp('[?#]'));
-  final path = cut < 0 ? target : target.substring(0, cut);
-  final registrations = index.routes.where((r) => r.path == path).toList();
+  final path = byName || cut < 0 ? target : target.substring(0, cut);
+  final registrations = index.routes
+      .where((r) => byName ? r.name == target : r.path == path)
+      .toList();
   final names = {
     for (final r in registrations)
       if (r.name != null) r.name!,
   };
+  final paths = {
+    for (final r in registrations)
+      if (r.path != null) r.path!,
+  };
   final candidates = <Map<String, Object?>>[];
   final possible = <Map<String, Object?>>[];
+  final dynamicSites = <Map<String, Object?>>[];
   final truncated = <String>[];
-  var dynamicSites = 0;
   for (final s in _sites(index)) {
     final at = s.site.file.at(s.site.node);
     if (s.truncated) truncated.add(at);
     String? prefix;
     var dynamic = false;
     for (final p in s.paths) {
-      final destination = p.destination;
-      final targets = _targets(index, s.site, destination);
+      final (targets, templated) = _targets(index, s.site, p);
       if (targets.any(registrations.contains)) {
-        candidates.add(_candidate(index, s.site, p));
+        candidates.add(_candidate(index, s.site, p, templated));
         continue;
       }
-      if (targets.isNotEmpty) continue;
+      final destination = p.destination;
+      if (targets.isNotEmpty || destination == null) continue;
       final known = destination.text;
       if (s.site.named) {
         if (destination.complete) continue;
@@ -247,33 +303,34 @@ Map<String, Object?> query(CodeIndex index, String target) {
         // Relative, or nothing beyond `/` known: it can reach any route.
         if (!known.startsWith('/') || known.length <= 1) {
           dynamic = true;
-        } else if (_prefixFits(known, path)) {
+        } else if (paths.any((path) => _prefixFits(known, path))) {
           prefix = known;
         }
       }
     }
+    final expression = {'at': at, 'expression': '${s.site.destination}'};
     if (prefix != null) {
-      possible.add({
-        'at': at,
-        'expression': '${s.site.destination}',
-        'knownPrefix': prefix,
-      });
+      possible.add({...expression, 'knownPrefix': prefix});
     } else if (dynamic) {
-      dynamicSites++;
+      dynamicSites.add(expression);
     }
   }
   return {
     'schemaVersion': schemaVersion,
-    'route': path,
+    'route': target,
     'registrations': [
       for (final r in registrations)
-        {'at': r.file.at(r.node), if (r.name != null) 'name': r.name},
+        {
+          'at': r.file.at(r.node),
+          if (byName && r.path != null) 'path': r.path,
+          if (r.name != null) 'name': r.name,
+        },
     ],
     if (registrations.isEmpty) 'suggestions': _suggest(index, path),
     'candidates': candidates,
     // Any of these can make the candidate list incomplete.
     if (possible.isNotEmpty) 'prefixMatches': possible,
-    if (dynamicSites > 0) 'fullyDynamicSites': dynamicSites,
+    if (dynamicSites.isNotEmpty) 'dynamicSites': dynamicSites,
     if (truncated.isNotEmpty) 'truncatedSites': truncated,
     if (index.parseErrors.isNotEmpty)
       'parseErrors': [
@@ -300,16 +357,20 @@ bool _prefixFits(String prefix, String pattern) {
 }
 
 Map<String, Object?> _candidate(
-    CodeIndex index, NavigationSite site, _Path path) {
+    CodeIndex index, NavigationSite site, _Path path, bool templated) {
   final chain = path.chain;
   final build = path.build;
   final first = chain.hops.first;
+  final within = index.within(chain);
+  final destination = path.destination;
   return {
     'root': {
       'kind': chain.rootKind,
       if (chain.slot != null) 'slot': chain.slot,
-      'at': first.file.at(first.node),
+      'at': first.file.at(chain.slotNode ?? first.node),
       'symbol': first.owner?.symbol,
+      if (within != null)
+        'within': {'slot': within.$2, 'at': first.file.at(within.$1)},
     },
     if (build != null)
       'builtBy': {
@@ -320,14 +381,26 @@ Map<String, Object?> _candidate(
     'hops': [for (final hop in chain.hops) _hop(index, hop)],
     'destination': {
       'expression': '${site.destination}',
-      'value': path.destination.text,
-      if (path.destination.forwarded) 'forwarded': true,
+      if (destination != null) ...{
+        'value': destination.display,
+        if (destination.forwarded) 'forwarded': true,
+        if (templated) 'templated': true,
+        if (path.alternative) 'alternative': true,
+      } else
+        'branch': path.branch ?? 'any',
     },
     'conditions': [
       if (build != null)
-        for (final hop in build.hops) ...index.conditionsAt(hop, build: true),
+        for (final hop in build.hops)
+          ...index.conditionsAt(hop, phase: 'at_creation'),
       for (final (i, hop) in chain.hops.indexed)
-        ...index.conditionsAt(hop, root: i == 0),
+        ...switch ((i, chain.rootKind)) {
+          (0, _) => index.conditionsAt(hop, root: true),
+          (1, 'callback_factory') => index.conditionsAt(hop, factory: true),
+          (_, 'callback' || 'callback_factory') =>
+            index.conditionsAt(hop, phase: 'on_event'),
+          _ => index.conditionsAt(hop),
+        },
     ],
   };
 }
@@ -342,14 +415,23 @@ Map<String, Object?> _hop(CodeIndex index, Hop hop) => {
 
 String _code(AstNode node) => switch (node) {
       MethodInvocation n => '${n.methodName}(...)',
+      InstanceCreationExpression n => '${n.constructorName}(...)',
       _ => '$node',
     };
 
-/// Lines outside the registration that mention the route's path expression.
+/// Lines outside the registration that mention the route: its full path or
+/// name as a string literal, or the constant its path is written with.
 List<String> _references(CodeIndex index, RouteDecl route) {
-  final source = route.pathExpression?.toSource();
-  if (source == null) return const [];
-  final pattern = RegExp('${RegExp.escape(source)}(?![\\w\$])');
+  final expression = route.pathExpression;
+  final needles = [
+    if (route.path case final path?) ...["'$path'", '"$path"'],
+    if (route.name case final name?) ...["'$name'", '"$name"'],
+    if (expression is PrefixedIdentifier || expression is PropertyAccess)
+      '$expression',
+  ];
+  if (needles.isEmpty) return const [];
+  final pattern =
+      RegExp('(${needles.map(RegExp.escape).join('|')})(?![\\w\$])');
   return [
     for (final file in index.files)
       for (final match in pattern.allMatches(file.content))

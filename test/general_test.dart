@@ -53,13 +53,13 @@ void main() {
         'phase': 'at_creation',
       },
     ]);
-    expect(query(index, '/home/detail/:id')['prefixMatches'], [
-      {
-        'at': 'lib/screens.dart:44',
-        'expression': 'location',
-        'knownPrefix': '/home/detail/',
-      },
-    ]);
+    // The other call passes `Paths.detail(id)`: a known shape around an id.
+    expect(candidates(index, '/home/detail/:id').single['destination'], {
+      'expression': 'location',
+      'value': '/home/detail/{id}',
+      'forwarded': true,
+      'templated': true,
+    });
   });
 
   test('prefers a static route over a pattern for the same location', () {
@@ -168,9 +168,12 @@ class W extends StatelessWidget {
 }
 ''',
     });
-    expect(query(dynamic, '/settings')['fullyDynamicSites'], 3);
+    List<Object?> dynamicSites(Map<String, Object?> result) =>
+        [for (final s in result['dynamicSites'] as List) (s as Map)['at']];
+    expect(dynamicSites(query(dynamic, '/settings')),
+        ['lib/app.dart:13', 'lib/app.dart:14', 'lib/app.dart:16']);
     final posts = query(dynamic, '/users/:uid/posts');
-    expect(posts['fullyDynamicSites'], 3);
+    expect(dynamicSites(posts), hasLength(3));
     expect([for (final m in posts['prefixMatches'] as List) m['knownPrefix']],
         ['/users/me/']);
     final relative = (check(dynamic)['findings'] as List)
@@ -216,7 +219,7 @@ class _PageState extends State<Page> {
         isEmpty);
   });
 
-  test('keeps one chain per root and roots recursion as a cycle', () {
+  test('keeps one chain per call site and roots recursion as a cycle', () {
     final shapes = project({
       'app.dart': '''
 final router = GoRouter(routes: [GoRoute(path: '/d'), GoRoute(path: '/r')]);
@@ -231,7 +234,13 @@ class W extends StatelessWidget {
 }
 ''',
     });
-    expect(candidates(shapes, '/d'), hasLength(1));
+    // `_a` reaches `_d` through two call sites, `_b` and `_c`.
+    expect([
+      for (final c in candidates(shapes, '/d')) symbols(c)
+    ], [
+      ['W.build', 'W._a', 'W._b', 'W._d'],
+      ['W.build', 'W._a', 'W._c', 'W._d'],
+    ]);
     expect(
         candidates(shapes, '/r').single['root'], containsPair('kind', 'cycle'));
   });

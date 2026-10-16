@@ -59,8 +59,9 @@ void main() {
         'at': 'lib/navigation.dart:7',
         'kind': 'guard',
         'expression': 'id.isEmpty',
-        'is': false
-      },
+        'is': false,
+        'phase': 'on_event',
+      }
     ]);
   });
 
@@ -123,19 +124,17 @@ void main() {
     ]);
     final factory = (query(index, '/orphan')['candidates'] as List).last as Map;
     expect([for (final h in factory['hops'] as List) (h as Map)['deferred']],
-        [true, true]);
+        [null, true]);
   });
 
-  test('reports dynamic suffixes as prefix matches, not candidates', () {
-    final result = query(index, '/home/items/:id');
-    expect(result['candidates'], isEmpty);
-    expect(result['prefixMatches'], [
-      {
-        'at': 'lib/home_screen.dart:24',
-        'expression': "'/home/items/\${DateTime.now()}'",
-        'knownPrefix': '/home/items/',
-      },
-    ]);
+  test('matches a location with an unknown segment to a :param route', () {
+    final candidate =
+        (query(index, '/home/items/:id')['candidates'] as List).single as Map;
+    expect(candidate['destination'], {
+      'expression': "'/home/items/\${DateTime.now()}'",
+      'value': '/home/items/{DateTime.now()}',
+      'templated': true,
+    });
   });
 
   test('checks unknown, unresolved, uncalled, duplicate and unnavigated routes',
@@ -146,19 +145,13 @@ void main() {
       for (final f in findings('unresolved_destination'))
         f['expression']: f['reasons']
     }, {
-      "'/home/items/\${DateTime.now()}'": ['dynamic_expression'],
       'dynamicPath()': ['dynamic_expression'],
       'location': ['reassigned_parameter'],
     });
     expect(findings('uncalled_navigation').map((f) => f['symbol']),
         ['reassigned', '_goHome']);
     expect(findings('duplicate_route').map((f) => f['route']), ['/detail']);
-    expect({
-      for (final f in findings('route_without_navigation'))
-        f['route']: f['otherReferences']
-    }, {
-      '/home/items/:id': 0
-    });
+    expect(findings('route_without_navigation'), isEmpty);
   });
 
   test('follows member and switch-branch tear-offs', () {
