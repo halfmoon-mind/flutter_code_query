@@ -490,7 +490,8 @@ extension _Values on CodeIndex {
         // `prefix.kHome` through an import prefix names a top-level constant
         // of the libraries imported with it.
         if (_prefixes[env.file.library]?[e.prefix.name] case final within?) {
-          return _constant(e.identifier.name, env.file, depth, within);
+          return _constant(e.identifier.name, env.file, depth,
+              _visible(within, e.identifier.name));
         }
         final key = '${e.prefix.name}.${e.identifier.name}';
         if (!_consts.containsKey(key)) {
@@ -540,8 +541,12 @@ extension _Values on CodeIndex {
           )
           when _prefixes[env.file.library]?.containsKey(prefix.name) ?? false:
         // `prefix.Paths.home` through an import prefix.
-        return _constant('${identifier.name}.${propertyName.name}', env.file,
-            depth, _prefixes[env.file.library]![prefix.name]);
+        return _constant(
+            '${identifier.name}.${propertyName.name}',
+            env.file,
+            depth,
+            _visible(
+                _prefixes[env.file.library]![prefix.name]!, identifier.name));
       case PropertyAccess():
         final target = e.realTarget;
         if (_enumValue(target, env, depth) case (final type, final value)) {
@@ -745,7 +750,8 @@ extension _Values on CodeIndex {
     ];
     final sameLibrary =
         matches.where((m) => m.$1.library == from.library).toList();
-    final imports = _imports[from.library] ?? const <String>{};
+    final imports =
+        _visible(_imports[from.library] ?? const [], key.split('.').first);
     final imported =
         matches.where((m) => imports.contains(m.$1.library)).toList();
     final candidates = sameLibrary.isNotEmpty

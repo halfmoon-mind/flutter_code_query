@@ -128,10 +128,13 @@ class CodeIndex {
 
   /// Import prefixes (`import 'x.dart' as x;`) by library, each with the
   /// project libraries it imports.
-  final _prefixes = <String, Map<String, Set<String>>>{};
+  final _prefixes = <String, Map<String, List<_Namespace>>>{};
   final _typedClasses = <String>{};
 
-  final _imports = <String, Set<String>>{};
+  /// Unprefixed imports by library.
+  final _imports = <String, List<_Namespace>>{};
+
+  final _exports = <String, List<_Namespace>>{};
 
   final _creations = <String, List<_Creation>>{};
 
@@ -236,41 +239,28 @@ class CodeIndex {
         }
       }
     }
-    final exports = <String, Set<String>>{};
     for (final (relative, content, unit, lineInfo) in parsed) {
       final library = owners[relative] ?? relative;
-      final imports = index._imports[library] ??= {};
+      final imports = index._imports[library] ??= [];
       for (final import in unit.directives.whereType<ImportDirective>()) {
         final path = resolve(relative, import.uri.stringValue);
-        if (path != null) imports.add(path);
-        if (import.prefix case final prefix?) {
-          final libraries =
-              (index._prefixes[library] ??= {})[prefix.name] ??= {};
-          if (path != null) libraries.add(path);
-        }
+        final namespace = path == null ? null : _Namespace(path, import);
+        // A prefixed import's names are reached only through the prefix.
+        final libraries = switch (import.prefix) {
+          final prefix? =>
+            (index._prefixes[library] ??= {})[prefix.name] ??= [],
+          null => imports,
+        };
+        if (namespace != null) libraries.add(namespace);
       }
       for (final export in unit.directives.whereType<ExportDirective>()) {
         if (resolve(relative, export.uri.stringValue) case final path?) {
-          (exports[library] ??= {}).add(path);
+          (index._exports[library] ??= []).add(_Namespace(path, export));
         }
       }
       final file = SourceFile(relative, library, content, unit, lineInfo);
       index.files.add(file);
       unit.accept(_Collector(index, file));
-    }
-    // An import also reaches what the imported library exports, transitively.
-    void addExports(Set<String> libraries) {
-      final queue = [...libraries];
-      while (queue.isNotEmpty) {
-        for (final path in exports[queue.removeLast()] ?? const <String>{}) {
-          if (libraries.add(path)) queue.add(path);
-        }
-      }
-    }
-
-    index._imports.values.forEach(addExports);
-    for (final prefixes in index._prefixes.values) {
-      prefixes.values.forEach(addExports);
     }
     for (final MapEntry(:key, :value) in index._superclasses.entries) {
       (index._subclasses[value] ??= []).add(key);
@@ -283,6 +273,19 @@ class CodeIndex {
     index._resolveNavigations();
     index._registerRoutes();
     return index;
+  }
+
+  /// Libraries whose top-level [name] [namespaces] make visible, following
+  /// their exports transitively through `show` and `hide`.
+  Set<String> _visible(Iterable<_Namespace> namespaces, String name) {
+    final libraries = <String>{};
+    final queue = [...namespaces];
+    while (queue.isNotEmpty) {
+      final namespace = queue.removeLast();
+      if (!namespace.allows(name) || !libraries.add(namespace.path)) continue;
+      queue.addAll(_exports[namespace.path] ?? const []);
+    }
+    return libraries;
   }
 
   static String? _packageName(String root) {

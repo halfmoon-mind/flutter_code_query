@@ -16,6 +16,29 @@ class SourceFile {
       '$path:${lineInfo.getLocation(node.offset).lineNumber}';
 }
 
+/// A library as an import or export directive shows its names: `show` keeps
+/// only those listed, `hide` drops them.
+class _Namespace {
+  _Namespace(this.path, NamespaceDirective directive) {
+    for (final combinator in directive.combinators) {
+      final [keyword, ...names] =
+          combinator.toSource().split(RegExp(r'[\s,]+'));
+      if (keyword == 'show') {
+        show = show?.intersection(names.toSet()) ?? names.toSet();
+      } else {
+        hide.addAll(names);
+      }
+    }
+  }
+
+  final String path;
+  Set<String>? show;
+  final hide = <String>{};
+
+  bool allows(String name) =>
+      (show?.contains(name) ?? true) && !hide.contains(name);
+}
+
 /// A named function body: method, function, constructor or local function.
 class Decl {
   Decl(this.file, this.node, this.name, this.className, this.parent);

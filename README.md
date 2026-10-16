@@ -161,7 +161,8 @@ candidate list can be incomplete.
   callbacks passed to a parameter named `on*`. Calls resolve through local
   functions, the enclosing class, project superclasses and their mixins,
   subclass overrides and `implements`, `part` files, imports and import
-  prefixes (with what the imported libraries export), and receivers whose type is written in the source (`C.m()`,
+  prefixes (with what the imported libraries export, through `show` and
+  `hide`), and receivers whose type is written in the source (`C.m()`,
   `C().m()`, `getIt<C>().m()`) or declared on a field, parameter or local
   (`final CartFlow flow;`). On a
   `BuildContext`, a `GoRouter` or a class outside the project, such as

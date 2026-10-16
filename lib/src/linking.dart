@@ -127,17 +127,32 @@ extension _Linking on CodeIndex {
         final target = ref.target;
         final className = ref.owner?.root.className ?? ref.className;
         if (target is SuperExpression) {
-          // Only a project superclass has members to link; a framework one has none.
-          final superclass = _superclasses[className];
-          return members.where((d) => d.className == superclass).toList();
+          // The nearest declaration above the class in its lineage, or above
+          // a mixin in the lineage of each class applying it. Only project
+          // classes have members to link; a framework one has none.
+          final lineages = [
+            if (className != null) ...[
+              _lineage(className).skip(1),
+              for (final MapEntry(:key, :value) in _mixins.entries)
+                if (value.contains(className))
+                  _lineage(key).skipWhile((t) => t != className).skip(1),
+            ],
+          ];
+          return {
+            for (final lineage in lineages)
+              ...lineage
+                  .map((t) => members.where((d) => d.className == t))
+                  .firstWhere((found) => found.isNotEmpty,
+                      orElse: () => const <Decl>[]),
+          }.toList();
         }
         if (target != null && target is! ThisExpression) {
           final prefixes =
-              _prefixes[ref.file.library] ?? const <String, Set<String>>{};
+              _prefixes[ref.file.library] ?? const <String, List<_Namespace>>{};
           // `prefix.f()` names a top-level function of the libraries imported
           // with that prefix.
           if (target is SimpleIdentifier && prefixes.containsKey(target.name)) {
-            final libraries = prefixes[target.name]!;
+            final libraries = _visible(prefixes[target.name]!, ref.name);
             return all
                 .where((d) =>
                     d.parent == null &&
@@ -189,16 +204,8 @@ extension _Linking on CodeIndex {
             .toList();
         if (own.isNotEmpty) return _withOverrides(own, className, members);
         // Members inherited from project superclasses and mixins.
-        // Mixins of the class, last applied first, then each superclass and
-        // its mixins.
-        final inherited = <String>[
-          ...?_mixins[className]?.reversed,
-          for (var c = _superclasses[className], i = 0;
-              c != null && i < 16;
-              c = _superclasses[c], i++) ...[
-            c,
-            ...?_mixins[c]?.reversed,
-          ],
+        final inherited = [
+          if (className != null) ..._lineage(className).skip(1)
         ];
         for (final type in inherited) {
           final found = members.where((d) => d.className == type).toList();
@@ -211,7 +218,8 @@ extension _Linking on CodeIndex {
         final sameLibrary =
             functions.where((d) => d.file.library == ref.file.library).toList();
         if (sameLibrary.isNotEmpty) return sameLibrary;
-        final imports = _imports[ref.file.library] ?? const <String>{};
+        final imports =
+            _visible(_imports[ref.file.library] ?? const [], ref.name);
         final imported =
             functions.where((d) => imports.contains(d.file.library)).toList();
         if (imported.isNotEmpty) return imported;
@@ -227,14 +235,7 @@ extension _Linking on CodeIndex {
   /// name, with their overrides; else project extensions on the type or a
   /// supertype.
   List<Decl> _membersOf(String type, Iterable<Decl> members) {
-    final lineage = <String>[type, ...?_mixins[type]?.reversed];
-    for (var c = _superclasses[type], i = 0;
-        c != null && i < 16;
-        c = _superclasses[c], i++) {
-      lineage
-        ..add(c)
-        ..addAll(_mixins[c]?.reversed ?? const []);
-    }
+    final lineage = _lineage(type);
     for (final t in lineage) {
       final found = members.where((d) => d.className == t).toList();
       if (found.isNotEmpty) return _withOverrides(found, type, members);
@@ -243,6 +244,16 @@ extension _Linking on CodeIndex {
         .where((d) => lineage.contains(_extensionOn[d.className]))
         .toList();
   }
+
+  /// [type], its mixins from the last applied, then each superclass the same
+  /// way: the order Dart looks a member up in.
+  List<String> _lineage(String type) => [
+        type,
+        ...?_mixins[type]?.reversed,
+        for (var c = _superclasses[type], i = 0;
+            c != null && i < 16;
+            c = _superclasses[c], i++) ...[c, ...?_mixins[c]?.reversed],
+      ];
 
   /// [found] plus the overrides in project subclasses of [type], the class a
   /// call is made on, which the call can dispatch to.

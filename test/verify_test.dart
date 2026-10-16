@@ -296,6 +296,26 @@ class W extends StatelessWidget {
         containsPair('kind', 'no_callers'));
   });
 
+  test('links an unprefixed call only through unprefixed imports', () {
+    final index = project({
+      'b.dart': "void open(BuildContext c) => c.go('/b');",
+      'other.dart': "void open(BuildContext c) => c.go('/other');",
+      'app.dart': r'''
+import 'b.dart' as b;
+import 'other.dart';
+
+final router = GoRouter(routes: [GoRoute(path: '/b'), GoRoute(path: '/other')]);
+
+class W extends StatelessWidget {
+  Widget build(BuildContext context) => T(onTap: () => open(context));
+}
+''',
+    });
+    expect(symbols(candidates(index, '/other').single), ['W.build', 'open']);
+    expect(candidates(index, '/b').single['root'],
+        containsPair('kind', 'no_callers'));
+  });
+
   test('follows exports of a library imported with a prefix', () {
     final index = project({
       'nav/open.dart': "void open(BuildContext c) => c.go('/a');",
@@ -314,6 +334,66 @@ class W extends StatelessWidget {
     expect(symbols(candidates(index, '/a').single), ['W.build', 'open']);
     expect(candidates(index, '/b').single['root'],
         containsPair('kind', 'no_callers'));
+  });
+
+  test('applies show and hide of imports and exports', () {
+    final index = project({
+      'a.dart': r'''
+void open(BuildContext c) => c.go('/a');
+const kHome = '/a';
+''',
+      'b.dart': r'''
+void open(BuildContext c) => c.go('/b');
+const kHome = '/b';
+''',
+      'barrel.dart': "export 'a.dart' hide open;\nexport 'b.dart' show open;",
+      'app.dart': r'''
+import 'barrel.dart' as nav;
+
+final router = GoRouter(routes: [GoRoute(path: '/a'), GoRoute(path: '/b')]);
+
+class W extends StatelessWidget {
+  Widget build(BuildContext context) => Column(children: [
+        T(onTap: () => nav.open(context)),
+        T(onTap: () => context.go(nav.kHome)),
+      ]);
+}
+''',
+    });
+    expect(symbols(candidates(index, '/b').single), ['W.build', 'open']);
+    expect(
+        [for (final c in candidates(index, '/a')) (c['root'] as Map)['kind']],
+        unorderedEquals(['callback', 'no_callers']));
+    expect(
+        candidates(index, '/a').where(
+            (c) => (c['destination'] as Map)['expression'] == 'nav.kHome'),
+        hasLength(1));
+  });
+
+  test('follows super calls along the mixin order', () {
+    final index = project({
+      'app.dart': r'''
+final router = GoRouter(routes: [GoRoute(path: '/a')]);
+
+abstract class Base { void open(BuildContext c); }
+mixin A on Base { void open(BuildContext c) => c.go('/a'); }
+mixin B on Base { void open(BuildContext c) => super.open(c); }
+class Flow extends Base with A, B {}
+class Fast extends Flow { void open(BuildContext c) => super.open(c); }
+
+class W extends StatelessWidget {
+  W(this.flow);
+  final Flow flow;
+  Widget build(BuildContext context) => T(onTap: () => flow.open(context));
+}
+''',
+    });
+    expect(
+        [for (final c in candidates(index, '/a')) symbols(c)],
+        unorderedEquals([
+          ['W.build', 'B.open', 'A.open'],
+          ['W.build', 'Fast.open', 'B.open', 'A.open'],
+        ]));
   });
 
   test('dispatches an inherited member only to overrides below the caller', () {
