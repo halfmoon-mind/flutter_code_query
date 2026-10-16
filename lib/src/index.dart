@@ -236,6 +236,7 @@ class CodeIndex {
         }
       }
     }
+    final exports = <String, Set<String>>{};
     for (final (relative, content, unit, lineInfo) in parsed) {
       final library = owners[relative] ?? relative;
       final imports = index._imports[library] ??= {};
@@ -248,9 +249,28 @@ class CodeIndex {
           if (path != null) libraries.add(path);
         }
       }
+      for (final export in unit.directives.whereType<ExportDirective>()) {
+        if (resolve(relative, export.uri.stringValue) case final path?) {
+          (exports[library] ??= {}).add(path);
+        }
+      }
       final file = SourceFile(relative, library, content, unit, lineInfo);
       index.files.add(file);
       unit.accept(_Collector(index, file));
+    }
+    // An import also reaches what the imported library exports, transitively.
+    void addExports(Set<String> libraries) {
+      final queue = [...libraries];
+      while (queue.isNotEmpty) {
+        for (final path in exports[queue.removeLast()] ?? const <String>{}) {
+          if (libraries.add(path)) queue.add(path);
+        }
+      }
+    }
+
+    index._imports.values.forEach(addExports);
+    for (final prefixes in index._prefixes.values) {
+      prefixes.values.forEach(addExports);
     }
     for (final MapEntry(:key, :value) in index._superclasses.entries) {
       (index._subclasses[value] ??= []).add(key);

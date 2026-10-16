@@ -187,21 +187,24 @@ extension _Linking on CodeIndex {
             .where((d) =>
                 d.className == className && d.file.library == ref.file.library)
             .toList();
-        if (own.isNotEmpty) return _withOverrides(own, members);
+        if (own.isNotEmpty) return _withOverrides(own, className, members);
         // Members inherited from project superclasses and mixins.
-        // Mixins of the class, then each superclass and its mixins.
+        // Mixins of the class, last applied first, then each superclass and
+        // its mixins.
         final inherited = <String>[
-          ...?_mixins[className],
+          ...?_mixins[className]?.reversed,
           for (var c = _superclasses[className], i = 0;
               c != null && i < 16;
               c = _superclasses[c], i++) ...[
             c,
-            ...?_mixins[c],
+            ...?_mixins[c]?.reversed,
           ],
         ];
         for (final type in inherited) {
           final found = members.where((d) => d.className == type).toList();
-          if (found.isNotEmpty) return _withOverrides(found, members);
+          if (found.isNotEmpty) {
+            return _withOverrides(found, className, members);
+          }
         }
         final functions = all.where(
             (d) => d.parent == null && d.className == null && visible(d));
@@ -212,7 +215,7 @@ extension _Linking on CodeIndex {
         final imported =
             functions.where((d) => imports.contains(d.file.library)).toList();
         if (imported.isNotEmpty) return imported;
-        // Not imported directly: perhaps through an export; the name is a guess.
+        // Not reachable through the project's imports; the name is a guess.
         if (functions.isNotEmpty) return _guess(ref, functions);
         // An unqualified call can reach a member inherited from outside the
         // project; a bare name read is a field or local far more often.
@@ -220,32 +223,34 @@ extension _Linking on CodeIndex {
       }();
 
   /// Members a call on an instance of [type] can reach: its own, else those
-  /// of the nearest mixin or superclass that declares the name, with their
-  /// overrides; else project extensions on the type or a supertype.
+  /// of the nearest mixin (last applied first) or superclass that declares the
+  /// name, with their overrides; else project extensions on the type or a
+  /// supertype.
   List<Decl> _membersOf(String type, Iterable<Decl> members) {
-    final lineage = <String>[type, ...?_mixins[type]];
+    final lineage = <String>[type, ...?_mixins[type]?.reversed];
     for (var c = _superclasses[type], i = 0;
         c != null && i < 16;
         c = _superclasses[c], i++) {
       lineage
         ..add(c)
-        ..addAll(_mixins[c] ?? const []);
+        ..addAll(_mixins[c]?.reversed ?? const []);
     }
     for (final t in lineage) {
       final found = members.where((d) => d.className == t).toList();
-      if (found.isNotEmpty) return _withOverrides(found, members);
+      if (found.isNotEmpty) return _withOverrides(found, type, members);
     }
     return members
         .where((d) => lineage.contains(_extensionOn[d.className]))
         .toList();
   }
 
-  /// [found] plus the overrides of its members in project subclasses, which a
-  /// call can dispatch to.
-  List<Decl> _withOverrides(Iterable<Decl> found, Iterable<Decl> members) {
+  /// [found] plus the overrides in project subclasses of [type], the class a
+  /// call is made on, which the call can dispatch to.
+  List<Decl> _withOverrides(
+      Iterable<Decl> found, String? type, Iterable<Decl> members) {
     final result = [...found];
-    final queue = [for (final d in found) d.className];
-    final seen = <String?>{...queue};
+    final queue = [type];
+    final seen = <String?>{type};
     while (queue.isNotEmpty) {
       for (final sub in _subclasses[queue.removeLast()] ?? const <String>[]) {
         if (!seen.add(sub)) continue;

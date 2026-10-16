@@ -296,6 +296,74 @@ class W extends StatelessWidget {
         containsPair('kind', 'no_callers'));
   });
 
+  test('follows exports of a library imported with a prefix', () {
+    final index = project({
+      'nav/open.dart': "void open(BuildContext c) => c.go('/a');",
+      'nav/barrel.dart': "export 'open.dart';",
+      'other.dart': "void open(BuildContext c) => c.go('/b');",
+      'app.dart': r'''
+import 'nav/barrel.dart' as nav;
+
+final router = GoRouter(routes: [GoRoute(path: '/a'), GoRoute(path: '/b')]);
+
+class W extends StatelessWidget {
+  Widget build(BuildContext context) => T(onTap: () => nav.open(context));
+}
+''',
+    });
+    expect(symbols(candidates(index, '/a').single), ['W.build', 'open']);
+    expect(candidates(index, '/b').single['root'],
+        containsPair('kind', 'no_callers'));
+  });
+
+  test('dispatches an inherited member only to overrides below the caller', () {
+    final index = project({
+      'app.dart': r'''
+final router = GoRouter(routes: [GoRoute(path: '/base'), GoRoute(path: '/fast'), GoRoute(path: '/other')]);
+
+class Base { void open(BuildContext c) => c.go('/base'); }
+class Flow extends Base {
+  Widget view(BuildContext context) => T(onTap: () => open(context));
+}
+class FastFlow extends Flow { void open(BuildContext c) => c.go('/fast'); }
+class Other extends Base { void open(BuildContext c) => c.go('/other'); }
+
+class W extends StatelessWidget {
+  W(this.flow);
+  final Flow flow;
+  Widget build(BuildContext context) => T(onTap: () => flow.open(context));
+}
+''',
+    });
+    expect(candidates(index, '/base'), hasLength(2));
+    expect(candidates(index, '/fast'), hasLength(2));
+    expect(candidates(index, '/other').single['root'],
+        containsPair('kind', 'no_callers'));
+  });
+
+  test('looks a member up in the last applied mixin first', () {
+    final index = project({
+      'app.dart': r'''
+final router = GoRouter(routes: [GoRoute(path: '/a'), GoRoute(path: '/b')]);
+
+mixin A { void open(BuildContext c) => c.go('/a'); }
+mixin B { void open(BuildContext c) => c.go('/b'); }
+class Flow with A, B {
+  Widget view(BuildContext context) => T(onTap: () => open(context));
+}
+
+class W extends StatelessWidget {
+  W(this.flow);
+  final Flow flow;
+  Widget build(BuildContext context) => T(onTap: () => flow.open(context));
+}
+''',
+    });
+    expect(candidates(index, '/b'), hasLength(2));
+    expect(candidates(index, '/a').single['root'],
+        containsPair('kind', 'no_callers'));
+  });
+
   test('finds inherited and extension members of a declared type', () {
     final index = project({
       'app.dart': r'''
