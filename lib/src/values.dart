@@ -123,6 +123,45 @@ extension _Values on CodeIndex {
     return null;
   }
 
+  /// A list literal's elements in order, with spreads of known lists expanded.
+  /// Not [exact] when an `if` or `for` element or an unknown spread makes the
+  /// positions uncertain.
+  (List<(Expression, _Env)>, bool exact) _elementsOf(
+      ListLiteral literal, _Env env,
+      [int depth = 0]) {
+    final out = <(Expression, _Env)>[];
+    var exact = true;
+    for (final element in literal.elements) {
+      if (element is Expression) {
+        out.add((element, env));
+        continue;
+      }
+      // An `if` or `for` element may or may not add its value at this point.
+      if (element is IfElement || element is ForElement) {
+        exact = false;
+        for (final value in switch (element) {
+          IfElement e => [e.thenElement, e.elseElement],
+          ForElement e => [e.body],
+          _ => const <CollectionElement?>[],
+        }) {
+          if (value is Expression) out.add((value, env));
+        }
+        continue;
+      }
+      final inner = element is SpreadElement && depth < 4
+          ? _listOf(element.expression, env)
+          : null;
+      if (inner == null) {
+        exact = false;
+        continue;
+      }
+      final (items, itemsExact) = _elementsOf(inner.$1, inner.$2, depth + 1);
+      out.addAll(items);
+      exact &= itemsExact;
+    }
+    return (out, exact);
+  }
+
   /// The list literal an expression names, with the environment its elements
   /// evaluate in: a bound parameter or widget field, a final local, a
   /// constant or a static field.
@@ -448,9 +487,10 @@ extension _Values on CodeIndex {
             case (final value, final caller)) {
           return _evaluate(value, caller, depth + 1).asForwarded;
         }
-        // `prefix.kHome` through an import prefix names a top-level constant.
-        if (_prefixes[env.file.library]?.contains(e.prefix.name) ?? false) {
-          return _constant(e.identifier.name, env.file, depth);
+        // `prefix.kHome` through an import prefix names a top-level constant
+        // of the libraries imported with it.
+        if (_prefixes[env.file.library]?[e.prefix.name] case final within?) {
+          return _constant(e.identifier.name, env.file, depth, within);
         }
         final key = '${e.prefix.name}.${e.identifier.name}';
         if (!_consts.containsKey(key)) {
@@ -477,28 +517,31 @@ extension _Values on CodeIndex {
         // every element's when the index is unknown.
         final list = _listOf(realTarget.target!, env);
         if (list == null) return unknown();
-        final (literal, listEnv) = list;
-        final elements = literal.elements.whereType<Expression>().toList();
+        final (elements, exact) = _elementsOf(list.$1, list.$2);
         final index = _evaluate(realTarget.index, env, depth + 1);
         final position = index.complete ? int.tryParse(index.text) : null;
+        final chosen = exact && position != null && position < elements.length
+            ? [elements[position]]
+            : elements;
         return Evaluation.of([
-          for (final element in position != null && position < elements.length
-              ? [elements[position]]
-              : elements)
-            switch (_objectField(element, propertyName.name, listEnv, depth)) {
+          for (final (element, elementEnv) in chosen)
+            switch (
+                _objectField(element, propertyName.name, elementEnv, depth)) {
               (final value, final caller) =>
                 _evaluate(value, caller, depth + 1),
               null => unknown(),
             },
+          // An `if` or `for` element, or an unknown spread, can hold others.
+          if (!exact || chosen.isEmpty) unknown(),
         ]);
       case PropertyAccess(
             realTarget: PrefixedIdentifier(:final prefix, :final identifier),
             :final propertyName
           )
-          when _prefixes[env.file.library]?.contains(prefix.name) ?? false:
+          when _prefixes[env.file.library]?.containsKey(prefix.name) ?? false:
         // `prefix.Paths.home` through an import prefix.
-        return _constant(
-            '${identifier.name}.${propertyName.name}', env.file, depth);
+        return _constant('${identifier.name}.${propertyName.name}', env.file,
+            depth, _prefixes[env.file.library]![prefix.name]);
       case PropertyAccess():
         final target = e.realTarget;
         if (_enumValue(target, env, depth) case (final type, final value)) {
@@ -691,8 +734,15 @@ extension _Values on CodeIndex {
     return null;
   }
 
-  Evaluation _constant(String key, SourceFile from, int depth) {
-    final matches = _consts[key] ?? const [];
+  /// A constant by key, preferring the same library, then imported ones;
+  /// only [within] when a prefix names the libraries.
+  Evaluation _constant(String key, SourceFile from, int depth,
+      [Set<String>? within]) {
+    final matches = [
+      for (final m
+          in _consts[key] ?? const <(SourceFile, Expression, String?)>[])
+        if (within == null || within.contains(m.$1.library)) m,
+    ];
     final sameLibrary =
         matches.where((m) => m.$1.library == from.library).toList();
     final imports = _imports[from.library] ?? const <String>{};

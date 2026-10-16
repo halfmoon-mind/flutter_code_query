@@ -250,4 +250,87 @@ class W extends StatelessWidget {
       '/items/'
     ]);
   });
+
+  test('indexes a list through spreads and doubts it past an if element', () {
+    final index = project({
+      'app.dart': r'''
+final router = GoRouter(routes: [GoRoute(path: '/a'), GoRoute(path: '/b'), GoRoute(path: '/c')]);
+
+class Tab { const Tab(this.route); final String route; }
+
+class W extends StatelessWidget {
+  static const tabs = [Tab('/a'), ...[Tab('/b')], Tab('/c')];
+  static const optional = [Tab('/a'), if (beta) Tab('/b'), Tab('/c')];
+  Widget build(BuildContext context) => Column(children: [
+        T(onTap: () => context.go(tabs[1].route)),
+        T(onTap: () => context.go(optional[1].route)),
+      ]);
+}
+''',
+    });
+    expect([
+      for (final c in candidates(index, '/b')) c['destination']
+    ], [
+      {'expression': 'tabs[1].route', 'value': '/b'},
+      {'expression': 'optional[1].route', 'value': '/b', 'alternative': true},
+    ]);
+    expect(q(index, '/c')['dynamicSites'], isNotEmpty);
+  });
+
+  test('links an import-prefixed call only into that library', () {
+    final index = project({
+      'b.dart': "void open(BuildContext c) => c.go('/b');",
+      'other.dart': "void open(BuildContext c) => c.go('/other');",
+      'app.dart': r'''
+import 'b.dart' as b;
+
+final router = GoRouter(routes: [GoRoute(path: '/b'), GoRoute(path: '/other')]);
+
+class W extends StatelessWidget {
+  Widget build(BuildContext context) => T(onTap: () => b.open(context));
+}
+''',
+    });
+    expect(symbols(candidates(index, '/b').single), ['W.build', 'open']);
+    expect(candidates(index, '/other').single['root'],
+        containsPair('kind', 'no_callers'));
+  });
+
+  test('finds inherited and extension members of a declared type', () {
+    final index = project({
+      'app.dart': r'''
+final router = GoRouter(routes: [GoRoute(path: '/x'), GoRoute(path: '/y')]);
+
+class Base { void open(BuildContext c) => c.go('/x'); }
+class Flow extends Base {}
+extension FlowNav on Flow { void openY(BuildContext c) => c.go('/y'); }
+
+class W extends StatelessWidget {
+  W(this.flow);
+  final Flow flow;
+  Widget build(BuildContext context) => Column(children: [
+        T(onTap: () => flow.open(context)),
+        T(onTap: () => flow.openY(context)),
+      ]);
+}
+''',
+    });
+    expect(symbols(candidates(index, '/x').single), ['W.build', 'Base.open']);
+    expect(
+        symbols(candidates(index, '/y').single), ['W.build', 'FlowNav.openY']);
+  });
+
+  test('keeps routes nested in a looped route under each of its copies', () {
+    final index = project({
+      'app.dart': r'''
+final router = GoRouter(routes: [
+  for (final p in ['/a', '/b'])
+    GoRoute(path: p, routes: [GoRoute(path: 'detail')]),
+]);
+''',
+    });
+    expect([
+      for (final r in routeList(index)['routes'] as List) (r as Map)['path']
+    ], unorderedEquals(['/a', '/b', '/a/detail', '/b/detail']));
+  });
 }

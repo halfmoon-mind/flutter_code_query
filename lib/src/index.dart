@@ -126,8 +126,9 @@ class CodeIndex {
   /// The type each extension applies to, by extension name.
   final _extensionOn = <String, String>{};
 
-  /// Import prefixes (`import 'x.dart' as x;`) by library.
-  final _prefixes = <String, Set<String>>{};
+  /// Import prefixes (`import 'x.dart' as x;`) by library, each with the
+  /// project libraries it imports.
+  final _prefixes = <String, Map<String, Set<String>>>{};
   final _typedClasses = <String>{};
 
   final _imports = <String, Set<String>>{};
@@ -239,8 +240,12 @@ class CodeIndex {
       final library = owners[relative] ?? relative;
       final imports = index._imports[library] ??= {};
       for (final import in unit.directives.whereType<ImportDirective>()) {
-        if (resolve(relative, import.uri.stringValue) case final path?) {
-          imports.add(path);
+        final path = resolve(relative, import.uri.stringValue);
+        if (path != null) imports.add(path);
+        if (import.prefix case final prefix?) {
+          final libraries =
+              (index._prefixes[library] ??= {})[prefix.name] ??= {};
+          if (path != null) libraries.add(path);
         }
       }
       final file = SourceFile(relative, library, content, unit, lineInfo);

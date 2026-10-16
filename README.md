@@ -169,14 +169,15 @@ candidate list can be incomplete.
   that type, so go_router's own `context.pop()` never reaches a project
   method named `pop`.
 - **Values**: string literals and interpolation, constants and static fields
-  (preferring the imported declaration), getters and functions by their
-  return values, enum `.name`, `.index` and constructor fields, dot
-  shorthands (`.settings`) when one project enum has that constant, forwarded
-  parameters with defaults, widget and object fields set by a constructor
-  call, list elements
-  by index (`items[index].path`), conditional and switch expressions, `??` and
-  null tests, `Uri(path: ...).toString()`, `namedLocation(name)`,
-  `TypedRoute().location`, and record fields of a Riverpod `Provider` default.
+  (preferring the imported declaration), getters and functions by their return
+  values, enum `.name`, `.index` and constructor fields, dot shorthands
+  (`.settings`) when one project enum has that constant, forwarded parameters
+  with defaults, widget and object fields set by a constructor call, list
+  elements by index (`items[index].path`; spreads of known lists are expanded,
+  and an `if` or `for` element makes every element a possible value),
+  conditional and switch expressions, `??` and null tests, `Uri(path:
+  ...).toString()`, `namedLocation(name)`, `TypedRoute().location`, and record
+  fields of a Riverpod `Provider` default.
 - **Conditions**: if/else, conditional and switch branches (including earlier
   cases that must not match), `&&`/`||`/`??` operands, loops and collection
   `for`, and early-exit guards, including else-if chains and `continue`.

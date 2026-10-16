@@ -53,7 +53,7 @@ extension _Routes on CodeIndex {
       // A route built in a collection `for` over a list literal is one route
       // per element, registered at that element.
       if (calls.isEmpty) {
-        if (_loopElements(creation.node, creation.owner, env)
+        if (_loopElements(creation.node, creation.owner, env, creationNodes)
             case final elements?) {
           for (final (bound, element) in elements) {
             add(creation, creation.file, element,
@@ -174,10 +174,12 @@ extension _Routes on CodeIndex {
   /// collection `for` over a list literal: `for (final item in items)` or
   /// `for (final (i, item) in items.indexed)`.
   List<(Map<String, (Expression, _Env)>, AstNode)>? _loopElements(
-      AstNode node, Decl? owner, _Env env) {
+      AstNode node, Decl? owner, _Env env, Set<AstNode> routeNodes) {
     for (var up = node.parent;
         up != null && !identical(up, owner?.node);
         up = up.parent) {
+      // A route nested in a looped route is registered under it instead.
+      if (routeNodes.contains(up)) return null;
       if (up is! ForElement) continue;
       final parts = up.forLoopParts;
       final (String? name, Expression? iterable) = switch (parts) {
@@ -202,10 +204,10 @@ extension _Routes on CodeIndex {
       };
       final list = iterable == null ? null : _listOf(iterable, env);
       if (name == null || list == null) return null;
-      final (literal, listEnv) = list;
+      final (elements, _) = _elementsOf(list.$1, list.$2);
       return [
-        for (final element in literal.elements.whereType<Expression>())
-          ({...env.arguments, name: (element, listEnv)}, element),
+        for (final (element, elementEnv) in elements)
+          ({...env.arguments, name: (element, elementEnv)}, element),
       ];
     }
     return null;

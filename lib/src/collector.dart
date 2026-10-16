@@ -83,14 +83,6 @@ class _Collector extends RecursiveAstVisitor<void> {
   }
 
   @override
-  void visitImportDirective(ImportDirective node) {
-    if (node.prefix case final prefix?) {
-      (index._prefixes[file.library] ??= {}).add(prefix.name);
-    }
-    super.visitImportDirective(node);
-  }
-
-  @override
   void visitExtensionTypeDeclaration(ExtensionTypeDeclaration node) => _inClass(
       _afterConst(node.typeKeyword.next!).lexeme,
       () => super.visitExtensionTypeDeclaration(node));

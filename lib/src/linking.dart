@@ -123,8 +123,7 @@ extension _Linking on CodeIndex {
             !ref.name.startsWith('_') || d.file.library == ref.file.library;
         final members = all.where(
             (d) => d.parent == null && d.className != null && visible(d));
-        List<Decl> inClass(String type) =>
-            _withOverrides(members.where((d) => d.className == type), members);
+        List<Decl> inClass(String type) => _membersOf(type, members);
         final target = ref.target;
         final className = ref.owner?.root.className ?? ref.className;
         if (target is SuperExpression) {
@@ -133,11 +132,17 @@ extension _Linking on CodeIndex {
           return members.where((d) => d.className == superclass).toList();
         }
         if (target != null && target is! ThisExpression) {
-          final prefixes = _prefixes[ref.file.library] ?? const <String>{};
-          // `prefix.f()` through an import prefix names a top-level function.
-          if (target is SimpleIdentifier && prefixes.contains(target.name)) {
+          final prefixes =
+              _prefixes[ref.file.library] ?? const <String, Set<String>>{};
+          // `prefix.f()` names a top-level function of the libraries imported
+          // with that prefix.
+          if (target is SimpleIdentifier && prefixes.containsKey(target.name)) {
+            final libraries = prefixes[target.name]!;
             return all
-                .where((d) => d.parent == null && d.className == null)
+                .where((d) =>
+                    d.parent == null &&
+                    d.className == null &&
+                    libraries.contains(d.file.library))
                 .toList();
           }
           // `C.m()`, `C().m()`, `getIt<C>().m()` and `prefix.C.m()` name the
@@ -152,7 +157,7 @@ extension _Linking on CodeIndex {
             InstanceCreationExpression(:final constructorName) =>
               _typeName(constructorName.type.toSource()),
             PrefixedIdentifier(:final prefix, :final identifier)
-                when prefixes.contains(prefix.name) =>
+                when prefixes.containsKey(prefix.name) =>
               identifier.name,
             _ => target.toSource(),
           };
@@ -213,6 +218,27 @@ extension _Linking on CodeIndex {
         // project; a bare name read is a field or local far more often.
         return ref.arguments == null ? const <Decl>[] : _guess(ref, members);
       }();
+
+  /// Members a call on an instance of [type] can reach: its own, else those
+  /// of the nearest mixin or superclass that declares the name, with their
+  /// overrides; else project extensions on the type or a supertype.
+  List<Decl> _membersOf(String type, Iterable<Decl> members) {
+    final lineage = <String>[type, ...?_mixins[type]];
+    for (var c = _superclasses[type], i = 0;
+        c != null && i < 16;
+        c = _superclasses[c], i++) {
+      lineage
+        ..add(c)
+        ..addAll(_mixins[c] ?? const []);
+    }
+    for (final t in lineage) {
+      final found = members.where((d) => d.className == t).toList();
+      if (found.isNotEmpty) return _withOverrides(found, members);
+    }
+    return members
+        .where((d) => lineage.contains(_extensionOn[d.className]))
+        .toList();
+  }
 
   /// [found] plus the overrides of its members in project subclasses, which a
   /// call can dispatch to.
