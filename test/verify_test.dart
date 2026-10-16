@@ -396,6 +396,39 @@ class W extends StatelessWidget {
         ]));
   });
 
+  test('keeps the class applying a mixin with its super call', () {
+    final index = project({
+      'app.dart': r'''
+final router = GoRouter(routes: [GoRoute(path: '/a'), GoRoute(path: '/c')]);
+
+abstract class Base { void open(BuildContext c); }
+mixin A on Base { void open(BuildContext c) => c.go('/a'); }
+mixin C on Base { void open(BuildContext c) => c.go('/c'); }
+mixin B on Base { void open(BuildContext c) => super.open(c); void again(BuildContext c) => open(c); }
+class F1 extends Base with A, B {}
+class F2 extends Base with C, B {}
+
+class W extends StatelessWidget {
+  W(this.f1, this.f2);
+  final F1 f1;
+  final F2 f2;
+  Widget build(BuildContext context) => Column(children: [
+        T(onTap: () => f1.open(context)),
+        T(onTap: () => f2.open(context)),
+        T(onTap: () => f1.again(context)),
+        T(onTap: () => f2.again(context)),
+      ]);
+}
+''',
+    });
+    List<Object?> roots(String route) =>
+        [for (final c in candidates(index, route)) (c['root'] as Map)['at']];
+    expect(
+        roots('/a'), unorderedEquals(['lib/app.dart:15', 'lib/app.dart:17']));
+    expect(
+        roots('/c'), unorderedEquals(['lib/app.dart:16', 'lib/app.dart:18']));
+  });
+
   test('dispatches an inherited member only to overrides below the caller', () {
     final index = project({
       'app.dart': r'''

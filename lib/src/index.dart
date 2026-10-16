@@ -154,6 +154,14 @@ class CodeIndex {
 
   final _guessed = <Ref>{};
 
+  /// The type a call names its receiver with, for `flow.open()` on a
+  /// `final Flow flow;`.
+  final _receiverTypes = <Ref, String>{};
+
+  /// For a `super` call in a mixin, each target with the classes applying the
+  /// mixin that it runs under.
+  final _superContexts = <Ref, Map<Decl, Set<String>>>{};
+
   /// Parses every non-generated Dart file under `lib`; nothing is resolved.
   static CodeIndex build(String root) {
     final index = CodeIndex(root);

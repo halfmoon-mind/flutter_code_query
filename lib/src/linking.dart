@@ -123,28 +123,32 @@ extension _Linking on CodeIndex {
             !ref.name.startsWith('_') || d.file.library == ref.file.library;
         final members = all.where(
             (d) => d.parent == null && d.className != null && visible(d));
-        List<Decl> inClass(String type) => _membersOf(type, members);
+        List<Decl> inClass(String type) {
+          _receiverTypes[ref] = type;
+          return _membersOf(type, members);
+        }
+
         final target = ref.target;
         final className = ref.owner?.root.className ?? ref.className;
         if (target is SuperExpression) {
-          // The nearest declaration above the class in its lineage, or above
-          // a mixin in the lineage of each class applying it. Only project
-          // classes have members to link; a framework one has none.
-          final lineages = [
-            if (className != null) ...[
-              _lineage(className).skip(1),
-              for (final MapEntry(:key, :value) in _mixins.entries)
-                if (value.contains(className))
-                  _lineage(key).skipWhile((t) => t != className).skip(1),
-            ],
-          ];
-          return {
-            for (final lineage in lineages)
-              ...lineage
-                  .map((t) => members.where((d) => d.className == t))
-                  .firstWhere((found) => found.isNotEmpty,
-                      orElse: () => const <Decl>[]),
-          }.toList();
+          // The nearest declaration above the class in its lineage. Only
+          // project classes have members to link; a framework one has none.
+          if (className == null) return const <Decl>[];
+          Iterable<Decl> nearest(Iterable<String> lineage) => lineage
+              .map((t) => members.where((d) => d.className == t))
+              .firstWhere((found) => found.isNotEmpty,
+                  orElse: () => const <Decl>[]);
+          final found = {...nearest(_lineage(className).skip(1))};
+          // Above a mixin, it depends on the class applying the mixin.
+          for (final MapEntry(:key, :value) in _mixins.entries) {
+            if (!value.contains(className)) continue;
+            final above = _lineage(key).skipWhile((t) => t != className);
+            for (final d in nearest(above.skip(1))) {
+              found.add(d);
+              ((_superContexts[ref] ??= {})[d] ??= {}).add(key);
+            }
+          }
+          return found.toList();
         }
         if (target != null && target is! ThisExpression) {
           final prefixes =
