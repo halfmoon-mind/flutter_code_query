@@ -1,0 +1,6 @@
+include: package:lints/recommended.yaml
+
+analyzer:
+  exclude:
+    # Fixture app source: parsed by the tests, never resolved.
+    - test/fixture/**

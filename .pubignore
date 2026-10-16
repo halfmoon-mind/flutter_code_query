@@ -1,0 +1,5 @@
+.dart_tool/
+build/
+pubspec.lock
+# Fixture app source parsed by the tests; it imports Flutter packages.
+test/fixture/
