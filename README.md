@@ -10,7 +10,7 @@ and scripts.
   and under which source conditions.
 - **`check`**: repo-wide findings such as navigation to unregistered paths or
   duplicate routes.
-- **`routes`**: every registered `GoRoute` path.
+- **`routes`**: every registered route path.
 
 ## Install
 
@@ -43,30 +43,46 @@ flutter_code_query check
 
 ```json
 {
-  "route": "/detail",
-  "registrations": [{"at": "lib/router.dart:16"}],
+  "route": "/users/new",
+  "registrations": [{"at": "lib/router.dart:26"}],
   "candidates": [
     {
-      "root": {"kind": "callback", "slot": "onPressed", "at": "lib/home_screen.dart:18", "symbol": "HomeScreen.build"},
-      "hops": [
-        {"at": "lib/home_screen.dart:18", "symbol": "HomeScreen.build", "code": "_openDetail(...)"},
-        {"at": "lib/home_screen.dart:39", "symbol": "HomeScreen._openDetail", "code": "navigateTo(...)"},
-        {"at": "lib/navigation.dart:8", "symbol": "navigateTo", "code": "push(...)"}
-      ],
-      "destination": {"expression": "'$location?id=$id'", "value": "/detail?id=a", "forwarded": true},
+      "root": {"kind": "callback", "slot": "onTap", "at": "lib/screens.dart:44", "symbol": "Screens._tile"},
+      "builtBy": {
+        "kind": "framework",
+        "hops": [{"at": "lib/screens.dart:32", "symbol": "Screens.build", "code": "_tile(...)"}]
+      },
+      "hops": [{"at": "lib/screens.dart:44", "symbol": "Screens._tile", "code": "go(...)"}],
+      "destination": {"expression": "location", "value": "/users/new", "forwarded": true},
       "conditions": [
-        {"at": "lib/home_screen.dart:16", "kind": "if", "expression": "canEdit", "is": true, "phase": "at_creation"},
-        {"at": "lib/navigation.dart:7", "kind": "guard", "expression": "id.isEmpty", "is": false}
+        {"at": "lib/screens.dart:32", "kind": "if", "expression": "ready", "is": true, "phase": "at_creation"}
       ]
     }
-  ],
-  "fullyDynamicSites": 2
+  ]
 }
 ```
 
-Read a candidate from `root` (the callback slot that starts it) through `hops`
-to the navigation call. `phase: at_creation` conditions decide whether the
-callback is bound; `on_event` conditions are checked when it fires.
+### Reading a candidate
+
+- `root` is where the chain starts. Its `kind` is one of:
+  - `callback`: a closure or tear-off bound to an `on*` slot (`slot` names it).
+  - `callback_factory`: a call whose result is bound to an `on*` slot.
+  - `framework`: a lifecycle method such as `build` or `initState`.
+  - `ambiguous_callers`: called only through a name shared by too many
+    declarations to link.
+  - `no_callers`: nothing in the project references the declaration.
+  - `cycle`, `depth_limit` (12 hops) or `no_owner`: the walk stopped there.
+- `builtBy` is the call path that builds the widget binding a callback root,
+  when that widget comes from a helper. Arguments are bound through it.
+- `hops` run from the root to the navigation call. A hop with `nameMatches`
+  was linked by its name alone. A hop with `deferred` only creates a closure
+  or passes a tear-off (a builder, listener or returned callback).
+- `conditions` are source expressions that must hold. `phase: at_creation`
+  conditions decide whether the callback is bound; `on_event` conditions are
+  checked when it fires.
+- `prefixMatches`, `fullyDynamicSites`, `truncatedSites` and `parseErrors`
+  appear only when some navigation could reach the route without being a
+  candidate.
 
 ## Agent instructions
 
@@ -81,34 +97,44 @@ output run at the app root. Install once with
 `dart pub global activate flutter_code_query`.
 
 - `flutter_code_query routes` lists registered paths. Map a product term to one
-  of them before querying.
+  of them first, matching its paths and names against the app's UI strings.
 - `flutter_code_query query <path>` lists incoming candidates. Report each
-  candidate separately: its `root`, `hops`, `destination`, and `conditions`
-  with their `phase`.
-- `flutter_code_query check` lists repo-wide findings. Run it after changing
-  routes or navigation calls and resolve every `warning`.
+  candidate separately: its `root`, `builtBy`, `hops`, `destination`, and
+  `conditions` with their `phase`.
+- `flutter_code_query check` lists repo-wide findings, warnings first. After
+  changing routes or navigation calls, resolve every `warning`; `info`
+  findings are leads to inspect.
 
 The output is static source evidence: cite its `at` locations. A candidate is
-a possible chain, and conditions are unevaluated expressions. A hop with
-`inClosure` or `nameMatches` is unconfirmed. When `prefixMatches`,
-`fullyDynamicSites`, `truncatedSites` or `parseErrors` appear, say the
-candidate list can be incomplete.
+a possible chain, and conditions are unevaluated expressions; to say who can
+trigger one, trace the state a condition names in source. A hop with
+`deferred` or `nameMatches` is unconfirmed. When the query output contains
+`prefixMatches`, `fullyDynamicSites`, `truncatedSites` or `parseErrors`, say
+the candidate list can be incomplete.
 ```
 
 ## What it indexes
 
-- `GoRoute(path:, name:)` registrations, joining nested relative paths. Paths
-  may be literals, constants, or single-argument wrappers such as
-  `RouteInfo('/home')`.
-- `go`/`push`/`pushReplacement`/`replace` and their `*Named` forms on a
-  receiver ending in `context` or containing `router`.
-- Incoming chains from each navigation call up to an `on*` callback slot,
-  including tear-offs (`onTap: controller.open`), closures inside conditional
-  or switch expressions, and callback factories (`onTap: _onTapFor(x)`).
-- Destinations through string interpolation, `final` locals, forwarded
-  parameters, and record fields of a Riverpod `Provider` default value.
-- Source conditions on each hop: if/else, conditional and switch branches,
-  `&&`/`||` operands, loops and early-exit guards.
+- **Registrations**: `GoRoute(...)` (also import-prefixed), project subclasses
+  of `GoRoute` including `super.path` parameters, and routes built by
+  functions or getters, registered where they are called. Nested relative
+  paths are joined with their parent.
+- **Navigation**: `go`/`push`/`pushReplacement`/`replace` and their `*Named`
+  forms on a receiver ending in `context`, containing `router`, or declared as
+  a `BuildContext` or `GoRouter`, and bare calls inside an extension on those
+  types.
+- **Chains**: from each navigation call up to an `on*` callback slot, one
+  shortest chain per root. Callbacks may be tear-offs (`onTap: c.open`),
+  closures in conditional, switch or `??` expressions, or callback factories.
+  Members of project superclasses and mixins and `part` files resolve like the
+  compiler would; other receivers are untyped (see Limits).
+- **Values**: string literals and interpolation, constants and static fields,
+  getters and static or top-level functions that return one expression,
+  enum `.name` and constructor fields, forwarded parameters with defaults,
+  `??` and null tests, and record fields of a Riverpod `Provider` default.
+- **Conditions**: if/else, conditional and switch branches (including earlier
+  cases that must not match), `&&`/`||`/`??` operands, loops and collection
+  `for`, and early-exit guards.
 
 Files whose header says `GENERATED ... DO NOT MODIFY`, `*.g.dart` and
 `*.freezed.dart` are skipped.
@@ -117,32 +143,36 @@ Files whose header says `GENERATED ... DO NOT MODIFY`, `*.g.dart` and
 
 | Check | Severity | Meaning |
 | --- | --- | --- |
-| `unknown_destination` | warning | A resolved location matches no registered route. |
+| `unknown_destination` | warning | A resolved location or name matches no registered route. It is `info` when some route paths or names could not be evaluated. |
 | `duplicate_route` | warning | The same full path is registered more than once. |
 | `parse_error` | warning | A file was only partly parsed, so its routes and calls can be missing. |
-| `unresolved_destination` | info | The destination could not be evaluated statically. |
+| `unresolved_destination` | info | The destination could not be evaluated statically, or is relative. |
 | `uncalled_navigation` | info | Every chain ends in a declaration nothing references. |
 | `route_without_navigation` | info | No navigation call resolves to the route; `otherReferences` counts other mentions such as redirects or widget parameters. |
-| `unresolved_route_path` | info | A `GoRoute` path could not be evaluated. |
+| `unresolved_route_path` | info | A route path could not be evaluated; `knownPrefix` gives its start. |
+
+`check` always exits 0; read the `severity` of each finding.
 
 ## Limits
 
-- Calls are linked by name, scope and library privacy, not by type. A hop with
-  `nameMatches > 1` may belong to another declaration with the same name.
-- A hop with `inClosure` only creates a closure (a builder, listener or
-  returned callback); whether the closure runs is not established.
-- Conditions are source expressions, never evaluated values.
-- Redirects, deep links and fully dynamic destinations are not candidates.
-  `query` lists dynamic destinations with a matching known prefix under
-  `prefixMatches` and counts the rest in `fullyDynamicSites`.
-- A navigation site keeps at most 200 incoming chains; sites past that appear
-  under `truncatedSites`.
+- Calls on an untyped receiver (`x.open()`) are linked by name, and only when
+  at most 3 declarations share it; those hops carry `nameMatches`. Calls of
+  lifecycle methods such as `build` or `dispose` are left to the framework.
+- A `deferred` hop is not established to run.
+- Conditions are source expressions, never evaluated values. Static and
+  top-level variables are read from their initializers.
+- Redirects, deep links, `goBranch` shell switches and fully dynamic
+  destinations are not candidates.
+- A navigation site keeps at most 200 chains; sites past that appear under
+  `truncatedSites`.
+- Symlinked files under `lib/` are skipped.
 - Not supported yet: go_router_builder typed routes, Navigator 1.0,
-  auto_route, import-prefixed `GoRoute`, and API data flow.
+  auto_route, and API data flow.
 
 ## Versions
 
 The tool does not depend on Flutter, so the app's Flutter version needs no
-pinning. It runs on Dart 3.5 or later and parses with the newest language
-version its `analyzer` 7.x knows. If the app adopts newer syntax, the affected
-files appear as `parse_error` findings instead of being dropped silently.
+pinning. It runs on Dart 3.5 or later with `analyzer` 7 to 12; pub picks the
+newest your SDK allows, and analyzer 12 (Dart 3.9+) parses dot shorthands.
+Syntax newer than that analyzer, such as Dart 3.13 primary constructors,
+shows up as `parse_error` findings instead of being dropped silently.

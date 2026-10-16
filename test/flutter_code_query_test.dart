@@ -118,11 +118,11 @@ void main() {
         'at': 'lib/patterns.dart:28',
         'symbol': 'Patterns.build',
         'code': 'go(...)',
-        'inClosure': true,
+        'deferred': true,
       },
     ]);
     final factory = (query(index, '/orphan')['candidates'] as List).last as Map;
-    expect([for (final h in factory['hops'] as List) (h as Map)['inClosure']],
+    expect([for (final h in factory['hops'] as List) (h as Map)['deferred']],
         [true, true]);
   });
 
@@ -208,8 +208,9 @@ ${List.filled(callers, '        T(onTap: () => openX(context)),').join('\n')}
     Directory('${root.path}/lib').createSync();
     File('${root.path}/lib/broken.dart').writeAsStringSync('void f( {\n');
     final index = CodeIndex.build(root.path);
-    expect(index.parseErrors.single, startsWith('lib/broken.dart:'));
-    expect(query(index, '/x')['parseErrors'], index.parseErrors);
+    expect(index.parseErrors.single.at, startsWith('lib/broken.dart:'));
+    expect((query(index, '/x')['parseErrors'] as List).single,
+        containsPair('at', index.parseErrors.single.at));
     expect(
         [for (final f in check(index)['findings'] as List) (f as Map)['check']],
         ['parse_error']);
