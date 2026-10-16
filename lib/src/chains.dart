@@ -46,7 +46,7 @@ extension _Chains on CodeIndex {
         } else if (owner == null) {
           root = Chain(
               chain, hop.className != null ? 'initializer' : 'no_owner', null);
-        } else if (!expanded.add(context == null ? owner : (owner, context))) {
+        } else if (!expanded.add(context.isEmpty ? owner : (owner, context))) {
           skipped.add(chain);
           continue;
         } else if (chain.length >= maxChainLength) {
@@ -54,7 +54,7 @@ extension _Chains on CodeIndex {
         } else {
           final callers = [
             for (final caller in callersOf(owner))
-              if (_fits(caller.$1, context)) caller,
+              if (_fitsContext(caller.$1, context)) caller,
           ];
           final onPath = {for (final h in chain) h.owner};
           final fresh = [
@@ -92,7 +92,7 @@ extension _Chains on CodeIndex {
         for (final c in chains) {
           final i = c.hops.indexWhere((h) => h.owner == first.owner);
           if (i < 0 || identical(c.hops[i].node, first.node)) continue;
-          if (!identical(_contextOf(c.hops.sublist(i)), context)) continue;
+          if (_contextOf(c.hops.sublist(i)) != context) continue;
           grafted = Chain([...c.hops.sublist(0, i), ...chain], c.rootKind,
               c.slot, c.slotNode);
           break;
@@ -110,19 +110,21 @@ extension _Chains on CodeIndex {
     return (chains, false);
   }
 
-  /// The classes applying a mixin that `this` must be in the first hop's
-  /// declaration: set by a `super` call of the mixin further down the chain,
-  /// reached through calls on `this`.
-  Set<String>? _contextOf(List<Hop> chain) {
+  /// What `this` must inherit from in the first hop's declaration: for each
+  /// `super` call of a mixin further down the chain, reached through calls on
+  /// `this`, one of the classes applying the mixin. `F1,F2 G` reads as F1 or
+  /// F2, and G; empty when nothing constrains it.
+  String _contextOf(List<Hop> chain) {
+    final context = <String>[];
     for (var i = 0; i < chain.length - 1; i++) {
       final ref = chain[i].ref;
-      if (ref == null) return null;
-      if (_superContexts[ref]?[chain[i + 1].owner] case final context?) {
-        return context;
+      if (ref == null) break;
+      if (_superContexts[ref]?[chain[i + 1].owner] case final classes?) {
+        context.add((classes.toList()..sort()).join(','));
       }
-      if (!_onThis(ref)) return null;
+      if (!_onThis(ref)) break;
     }
-    return null;
+    return context.join(' ');
   }
 
   bool _onThis(Ref ref) => switch (ref.target) {
@@ -130,13 +132,23 @@ extension _Chains on CodeIndex {
         _ => false,
       };
 
-  /// Whether [caller] can make its call on an instance of a [context] class.
-  bool _fits(Ref caller, Set<String>? context) {
-    if (context == null) return true;
-    final type = _onThis(caller)
+  /// Whether [caller] can make its call on an instance that inherits what
+  /// [context] requires: inheriting the caller's own code for a call on
+  /// `this`, or of the type its receiver is declared with.
+  bool _fitsContext(Ref caller, String context) {
+    if (context.isEmpty) return true;
+    final onThis = _onThis(caller);
+    final type = onThis
         ? caller.owner?.root.className ?? caller.className
         : _receiverTypes[caller];
-    return type == null || context.any((c) => _isA(c, type) || _isA(type, c));
+    if (type == null) return true;
+    return _classes.any((c) {
+      final lineage = _lineage(c);
+      return context
+              .split(' ')
+              .every((classes) => classes.split(',').any(lineage.contains)) &&
+          (onThis ? lineage.contains(type) : _isA(c, type));
+    });
   }
 
   /// Whether [type] is [other] or a project subtype of it, through

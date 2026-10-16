@@ -429,6 +429,67 @@ class W extends StatelessWidget {
         roots('/c'), unorderedEquals(['lib/app.dart:16', 'lib/app.dart:18']));
   });
 
+  test('keeps the applying class across chained mixin super calls', () {
+    final index = project({
+      'app.dart': r'''
+final router = GoRouter(routes: [GoRoute(path: '/a'), GoRoute(path: '/c')]);
+
+abstract class Base { void open(BuildContext c); }
+mixin A on Base { void open(BuildContext c) => c.go('/a'); }
+mixin C on Base { void open(BuildContext c) => c.go('/c'); }
+mixin X on Base { void open(BuildContext c) => super.open(c); }
+mixin B on Base { void open(BuildContext c) => super.open(c); }
+class F1 extends Base with A, X, B {}
+class F2 extends Base with C, X, B {}
+
+class W extends StatelessWidget {
+  W(this.f1, this.f2);
+  final F1 f1;
+  final F2 f2;
+  Widget build(BuildContext context) => Column(children: [
+        T(onTap: () => f1.open(context)),
+        T(onTap: () => f2.open(context)),
+      ]);
+}
+''',
+    });
+    List<Object?> roots(String route) =>
+        [for (final c in candidates(index, route)) (c['root'] as Map)['at']];
+    expect(roots('/a'), ['lib/app.dart:16']);
+    expect(roots('/c'), ['lib/app.dart:17']);
+  });
+
+  test('runs a mixin super call only in classes that inherit its code', () {
+    final index = project({
+      'app.dart': r'''
+final router = GoRouter(routes: [GoRoute(path: '/a'), GoRoute(path: '/c')]);
+
+abstract class Base { void open(BuildContext c); }
+mixin A on Base { void open(BuildContext c) => c.go('/a'); }
+mixin C on Base { void open(BuildContext c) => c.go('/c'); }
+mixin B on Base { void open(BuildContext c) => super.open(c); }
+class F1 extends Base with A, B {}
+class F2 extends Base with C, B implements F1 {}
+
+class W extends StatelessWidget {
+  W(this.f1, this.f2);
+  final F1 f1;
+  final F2 f2;
+  Widget build(BuildContext context) => Column(children: [
+        T(onTap: () => f1.open(context)),
+        T(onTap: () => f2.open(context)),
+      ]);
+}
+''',
+    });
+    List<Object?> roots(String route) =>
+        [for (final c in candidates(index, route)) (c['root'] as Map)['at']];
+    // An F2 never runs A's open; an F1 field can hold an F2, which runs C's.
+    expect(roots('/a'), ['lib/app.dart:15']);
+    expect(
+        roots('/c'), unorderedEquals(['lib/app.dart:15', 'lib/app.dart:16']));
+  });
+
   test('keeps a mixin super call reached through an interface', () {
     final index = project({
       'app.dart': r'''
