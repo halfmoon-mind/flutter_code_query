@@ -429,6 +429,50 @@ class W extends StatelessWidget {
         roots('/c'), unorderedEquals(['lib/app.dart:16', 'lib/app.dart:18']));
   });
 
+  test('keeps a mixin super call reached through an interface', () {
+    final index = project({
+      'app.dart': r'''
+final router = GoRouter(routes: [GoRoute(path: '/a')]);
+
+abstract class Flow { void open(BuildContext c); }
+abstract class Base { void open(BuildContext c); }
+mixin A on Base { void open(BuildContext c) => c.go('/a'); }
+mixin B on Base { void open(BuildContext c) => super.open(c); }
+class F1 extends Base with A, B implements Flow {
+  void open(BuildContext c) => super.open(c);
+}
+
+class W extends StatelessWidget {
+  W(this.flow);
+  final Flow flow;
+  Widget build(BuildContext context) => T(onTap: () => flow.open(context));
+}
+''',
+    });
+    expect(symbols(candidates(index, '/a').single),
+        ['W.build', 'F1.open', 'B.open', 'A.open']);
+  });
+
+  test('finds extension members on an interface of the declared type', () {
+    final index = project({
+      'app.dart': r'''
+final router = GoRouter(routes: [GoRoute(path: '/x')]);
+
+abstract class Flow {}
+class CartFlow implements Flow {}
+extension FlowNav on Flow { void openX(BuildContext c) => c.go('/x'); }
+
+class W extends StatelessWidget {
+  W(this.flow);
+  final CartFlow flow;
+  Widget build(BuildContext context) => T(onTap: () => flow.openX(context));
+}
+''',
+    });
+    expect(
+        symbols(candidates(index, '/x').single), ['W.build', 'FlowNav.openX']);
+  });
+
   test('dispatches an inherited member only to overrides below the caller', () {
     final index = project({
       'app.dart': r'''

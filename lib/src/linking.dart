@@ -244,9 +244,10 @@ extension _Linking on CodeIndex {
       final found = members.where((d) => d.className == t).toList();
       if (found.isNotEmpty) return _withOverrides(found, type, members);
     }
-    return members
-        .where((d) => lineage.contains(_extensionOn[d.className]))
-        .toList();
+    return [
+      for (final d in members)
+        if (_extensionOn[d.className] case final on? when _isA(type, on)) d,
+    ];
   }
 
   /// [type], its mixins from the last applied, then each superclass the same

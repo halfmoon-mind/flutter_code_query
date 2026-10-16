@@ -136,9 +136,25 @@ extension _Chains on CodeIndex {
     final type = _onThis(caller)
         ? caller.owner?.root.className ?? caller.className
         : _receiverTypes[caller];
-    return type == null ||
-        context.any(
-            (c) => _lineage(c).contains(type) || _lineage(type).contains(c));
+    return type == null || context.any((c) => _isA(c, type) || _isA(type, c));
+  }
+
+  /// Whether [type] is [other] or a project subtype of it, through
+  /// superclasses, mixins and interfaces.
+  bool _isA(String type, String other) {
+    final seen = <String>{};
+    final queue = [type];
+    while (queue.isNotEmpty) {
+      final t = queue.removeLast();
+      if (t == other) return true;
+      if (!seen.add(t)) continue;
+      queue.addAll([
+        ...?_mixins[t],
+        ...?_interfaces[t],
+        if (_superclasses[t] case final superclass?) superclass,
+      ]);
+    }
+    return false;
   }
 
   String _rootKind(Decl owner) {
