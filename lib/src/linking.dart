@@ -95,6 +95,9 @@ extension _Linking on CodeIndex {
             if (variable.name.lexeme != target.name) continue;
             final type = statement.variables.type;
             if (type != null) return type.toSource();
+            if (_variableType(null, variable.initializer) case final made?) {
+              return made;
+            }
             final value = variable.initializer
                     ?.toSource()
                     .replaceAll(RegExp('[!?]'), '')
@@ -154,9 +157,14 @@ extension _Linking on CodeIndex {
             _ => target.toSource(),
           };
           if (_classes.contains(type)) return inClass(type);
+          // A receiver declared with a project class type: `final Flow flow;`.
+          final declared = _staticType(target, className);
+          if (declared != null && _classes.contains(declared)) {
+            return inClass(declared);
+          }
           // Extension members apply by the receiver's type: a BuildContext, a
           // GoRouter or a class outside the project has no other members here.
-          if (_receiverType(target) case final receiver?) {
+          if (_receiverType(target, className) case final receiver?) {
             return members
                 .where((d) => _extensionOn[d.className] == receiver)
                 .toList();
@@ -176,12 +184,15 @@ extension _Linking on CodeIndex {
             .toList();
         if (own.isNotEmpty) return _withOverrides(own, members);
         // Members inherited from project superclasses and mixins.
+        // Mixins of the class, then each superclass and its mixins.
         final inherited = <String>[
+          ...?_mixins[className],
           for (var c = _superclasses[className], i = 0;
               c != null && i < 16;
-              c = _superclasses[c], i++)
+              c = _superclasses[c], i++) ...[
             c,
-          ...?_mixins[className],
+            ...?_mixins[c],
+          ],
         ];
         for (final type in inherited) {
           final found = members.where((d) => d.className == type).toList();
@@ -192,7 +203,12 @@ extension _Linking on CodeIndex {
         final sameLibrary =
             functions.where((d) => d.file.library == ref.file.library).toList();
         if (sameLibrary.isNotEmpty) return sameLibrary;
-        if (functions.isNotEmpty) return functions.toList();
+        final imports = _imports[ref.file.library] ?? const <String>{};
+        final imported =
+            functions.where((d) => imports.contains(d.file.library)).toList();
+        if (imported.isNotEmpty) return imported;
+        // Not imported directly: perhaps through an export; the name is a guess.
+        if (functions.isNotEmpty) return _guess(ref, functions);
         // An unqualified call can reach a member inherited from outside the
         // project; a bare name read is a field or local far more often.
         return ref.arguments == null ? const <Decl>[] : _guess(ref, members);
@@ -214,13 +230,40 @@ extension _Linking on CodeIndex {
     return result;
   }
 
+  /// The type a receiver is declared with or constructed as: a parameter or
+  /// local, a field of the enclosing class (or of the widget a State shows,
+  /// for `widget.x`), or a top-level variable.
+  String? _staticType(Expression target, String? className) {
+    String? field(String? type, String name) {
+      for (var c = type, i = 0;
+          c != null && i < 16;
+          c = _superclasses[c], i++) {
+        if (_variableTypes['$c.$name'] case final found?) return found;
+      }
+      return null;
+    }
+
+    return switch (target) {
+      SimpleIdentifier t => switch (_declaredType(t)) {
+          final declared? when declared.isNotEmpty => _typeName(declared),
+          final declared? when declared.isEmpty => null,
+          _ => field(className, t.name) ?? _variableTypes[t.name],
+        },
+      PrefixedIdentifier(:final prefix, :final identifier)
+          when prefix.name == 'widget' =>
+        field(_stateOf[className], identifier.name),
+      PropertyAccess(target: ThisExpression(), :final propertyName) =>
+        field(className, propertyName.name),
+      _ => null,
+    };
+  }
+
   /// The type of a receiver that is not a project class: `BuildContext` for
   /// `context`, `GoRouter` for `GoRouter.of(context)`, or the class outside the
   /// project in `Navigator.of(context)` or `Theme`. Null when untyped.
-  String? _receiverType(Expression target) {
+  String? _receiverType(Expression target, [String? className]) {
     final source = target.toSource().replaceAll(RegExp('[!?]'), '');
-    final declared =
-        target is SimpleIdentifier ? _declaredType(target) ?? '' : '';
+    final declared = _staticType(target, className) ?? '';
     if (source.toLowerCase().endsWith('context') ||
         declared.contains('BuildContext')) {
       return 'BuildContext';

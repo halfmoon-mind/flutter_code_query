@@ -77,17 +77,29 @@ extension _Chains on CodeIndex {
     }
     // Another call site in a declaration already walked gets the walk found
     // above that declaration, so each branch keeps its own conditions.
-    final found = [...chains];
-    for (final chain in skipped) {
-      final first = chain.first;
-      for (final c in found) {
-        final i = c.hops.indexWhere((h) => h.owner == first.owner);
-        if (i < 0 || identical(c.hops[i].node, first.node)) continue;
+    // A grafted chain can host further call sites, so repeat until stable.
+    var pending = skipped;
+    while (pending.isNotEmpty) {
+      final waiting = <List<Hop>>[];
+      for (final chain in pending) {
+        final first = chain.first;
+        Chain? grafted;
+        for (final c in chains) {
+          final i = c.hops.indexWhere((h) => h.owner == first.owner);
+          if (i < 0 || identical(c.hops[i].node, first.node)) continue;
+          grafted = Chain([...c.hops.sublist(0, i), ...chain], c.rootKind,
+              c.slot, c.slotNode);
+          break;
+        }
+        if (grafted == null) {
+          waiting.add(chain);
+          continue;
+        }
         if (chains.length >= limit) return (chains, true);
-        chains.add(Chain([...c.hops.sublist(0, i), ...chain], c.rootKind,
-            c.slot, c.slotNode));
-        break;
+        chains.add(grafted);
       }
+      if (waiting.length == pending.length) break;
+      pending = waiting;
     }
     return (chains, false);
   }

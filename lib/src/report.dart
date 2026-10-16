@@ -46,7 +46,7 @@ class _Site {
 List<_Site> _sites(CodeIndex index) {
   final sites = <_Site>[];
   for (final site in index.navigations) {
-    final (chains, truncated) = index.chainsTo(site);
+    var (chains, truncated) = index.chainsTo(site);
     final paths = <_Path>[];
     for (final chain in chains) {
       final plain = index.destination(site, chain);
@@ -54,18 +54,22 @@ List<_Site> _sites(CodeIndex index) {
           ? chain
           : Chain([...build.hops, ...chain.hops], chain.rootKind, chain.slot,
               chain.slotNode);
-      // Widget constructor calls matter only when they change the destination.
-      var builds = index.buildPaths(chain,
+      final (builds, cut) = index.buildPaths(chain,
           widgets:
               site.kind != 'branch' && site.kind != 'typed' && !plain.complete);
+      truncated |= cut;
+      // Widget constructor calls matter only when they change the destination;
+      // the others still stand for the unresolved destination.
+      List<Chain?> kept = builds;
       if (builds.isNotEmpty && builds.first.hops.last.ref?.creation == true) {
-        builds = [
+        final changed = [
           for (final build in builds)
             if (_shape(index.destination(site, whole(build))) != _shape(plain))
               build,
         ];
+        kept = [...changed, if (changed.length < builds.length) null];
       }
-      for (final build in builds.isEmpty ? const <Chain?>[null] : builds) {
+      for (final build in kept.isEmpty ? const <Chain?>[null] : kept) {
         final full = whole(build);
         if (!index.feasible(full)) continue;
         if (site.kind == 'branch') {
@@ -78,10 +82,11 @@ List<_Site> _sites(CodeIndex index) {
         }
         final destination =
             build == null ? plain : index.destination(site, full);
-        // `c ? '/a' : '/b'` written in the call: each branch with the
-        // condition that picks it.
-        final choices =
-            destination.alternatives == null ? null : _choices(site, chain);
+        // `c ? '/a' : '/b'`, written in the call or in a final local it
+        // names: each branch with the condition that picks it.
+        final choices = destination.alternatives == null
+            ? null
+            : _choices(site, chain, index.choiceExpression(site, chain));
         if (choices != null) {
           for (final (branch, selectedBy) in choices) {
             for (final value in index.evaluateAt(branch, full).expand()) {
@@ -156,11 +161,7 @@ String _shape(Evaluation e) => [
 /// The branches of a conditional or switch expression written as the
 /// destination, each with the condition that picks it.
 List<(Expression, Map<String, Object?>)>? _choices(
-    NavigationSite site, Chain chain) {
-  var expression = site.destination;
-  while (expression is ParenthesizedExpression) {
-    expression = expression.expression;
-  }
+    NavigationSite site, Chain chain, Expression? expression) {
   final phase =
       chain.rootKind == 'callback' || chain.rootKind == 'callback_factory'
           ? 'on_event'
@@ -221,6 +222,7 @@ Map<String, Object?> check(CodeIndex index) {
       index.routes.any((r) => r.nameExpression != null && r.name == null);
   for (final s in sites) {
     final unknown = <String>{};
+    final uncertain = <String>{};
     final unresolved = <String, String?>{};
     for (final path in s.paths) {
       final (targets, _) = _targets(index, s.site, path);
@@ -236,18 +238,22 @@ Map<String, Object?> check(CodeIndex index) {
       } else if (s.site.named ||
           !partial.any((p) => p.length > 1 && value.startsWith(p))) {
         unknown.add(value);
+      } else {
+        // A route with a partly known path may match it.
+        uncertain.add(value);
       }
     }
     final at = s.site.file.at(s.site.node);
-    for (final destination in unknown) {
-      final uncertain = s.site.named ? anyNameUnknown : anyPathUnknown;
+    for (final destination in {...unknown, ...uncertain}) {
+      final info = uncertain.contains(destination) ||
+          (s.site.named ? anyNameUnknown : anyPathUnknown);
       findings.add({
         'check': 'unknown_destination',
-        'severity': uncertain ? 'info' : 'warning',
+        'severity': info ? 'info' : 'warning',
         'at': at,
         'destination': destination,
         'expression': '${s.site.destination}',
-        if (uncertain)
+        if (info)
           'note': 'Some route ${s.site.named ? 'names' : 'paths'} could not '
               'be evaluated, so this destination may match one of them.',
       });
@@ -385,7 +391,9 @@ Map<String, Object?> query(CodeIndex index, String target) {
         continue;
       }
       final destination = p.destination;
-      if (targets.isNotEmpty || destination == null) continue;
+      // A templated value matching one route may also reach a static sibling
+      // of the same shape, so it still gets the prefix check below.
+      if (destination == null || (targets.isNotEmpty && !templated)) continue;
       final known = destination.text;
       if (s.site.named) {
         if (destination.complete) continue;
@@ -396,9 +404,13 @@ Map<String, Object?> query(CodeIndex index, String target) {
         }
       } else if (destination.path == null) {
         // Relative, or nothing beyond `/` known: it can reach any route.
+        final pattern = destination.pathPattern;
         if (!known.startsWith('/') || known.length <= 1) {
           dynamic = true;
-        } else if (paths.any((path) => _prefixFits(known, path))) {
+        } else if (paths.any((path) =>
+            _prefixFits(known, path) ||
+            // `/items/$id` can also be `/items/new`.
+            (pattern != null && _sameShape(pattern, path)))) {
           prefix = known;
         }
       }
@@ -427,6 +439,7 @@ Map<String, Object?> query(CodeIndex index, String target) {
     if (possible.isNotEmpty) 'prefixMatches': possible,
     if (dynamicSites.isNotEmpty) 'dynamicSites': dynamicSites,
     if (truncated.isNotEmpty) 'truncatedSites': truncated,
+    if (index.skippedLinks > 0) 'skippedLinks': index.skippedLinks,
     if (index.parseErrors.isNotEmpty)
       'parseErrors': [
         for (final e in index.parseErrors) {'at': e.at, 'message': e.message},
@@ -447,6 +460,19 @@ bool _prefixFits(String prefix, String pattern) {
     if (last ? !wanted[i].startsWith(known[i]) : wanted[i] != known[i]) {
       return false;
     }
+  }
+  return true;
+}
+
+/// Whether a location with unknown parts has as many segments as [path]
+/// and agrees with it wherever both are known.
+bool _sameShape(String pattern, String path) {
+  final wanted = pattern.split('/');
+  final have = path.split('/');
+  if (wanted.length != have.length) return false;
+  for (var i = 0; i < wanted.length; i++) {
+    if (wanted[i].contains(hole) || have[i].startsWith(':')) continue;
+    if (wanted[i] != have[i]) return false;
   }
   return true;
 }

@@ -53,6 +53,12 @@ class _Collector extends RecursiveAstVisitor<void> {
     if (mixins != null) {
       index._mixins[name] = [for (final m in mixins) _typeName(m.toSource())];
     }
+    final interfaces = node.implementsClause?.interfaces;
+    if (interfaces != null) {
+      index._interfaces[name] = [
+        for (final i in interfaces) _typeName(i.toSource()),
+      ];
+    }
     _inClass(name, () => super.visitClassDeclaration(node));
   }
 
@@ -105,6 +111,12 @@ class _Collector extends RecursiveAstVisitor<void> {
 
   @override
   void visitFieldDeclaration(FieldDeclaration node) {
+    for (final variable in node.fields.variables) {
+      if (_variableType(node.fields.type, variable.initializer)
+          case final type?) {
+        index._variableTypes['$_class.${variable.name.lexeme}'] = type;
+      }
+    }
     if (node.isStatic) {
       // Mutable statics count too: route paths are often declared as plain
       // `static String home = '/home';`. The initializer is what is read.
@@ -117,10 +129,12 @@ class _Collector extends RecursiveAstVisitor<void> {
     } else {
       // A field typed as, or initialized from, a BuildContext or GoRouter.
       for (final variable in node.fields.variables) {
-        final value = variable.initializer?.toSource() ?? '';
+        final value = (variable.initializer?.toSource() ?? '')
+            .replaceAll(RegExp('[!?]'), '')
+            .toLowerCase();
         if (_isRouterType(node.fields.type?.toSource()) ||
-            value.contains('GoRouter') ||
-            value.replaceAll(RegExp('[!?]'), '').endsWith('context')) {
+            value.contains('router') ||
+            value.endsWith('context')) {
           index._routerFields.add(variable.name.lexeme);
         }
       }
@@ -131,6 +145,10 @@ class _Collector extends RecursiveAstVisitor<void> {
   @override
   void visitTopLevelVariableDeclaration(TopLevelVariableDeclaration node) {
     for (final variable in node.variables.variables) {
+      if (_variableType(node.variables.type, variable.initializer)
+          case final type?) {
+        index._variableTypes[variable.name.lexeme] = type;
+      }
       if (variable.initializer case final initializer?) {
         (index._consts[variable.name.lexeme] ??= [])
             .add((file, initializer, null));
@@ -257,6 +275,19 @@ class _Collector extends RecursiveAstVisitor<void> {
       index._shellArguments.add((file, node, branches));
     }
   }
+}
+
+/// A variable's declared type, or the class its initializer constructs.
+String? _variableType(TypeAnnotation? type, Expression? initializer) {
+  if (type != null) return _typeName(type.toSource());
+  return switch (initializer) {
+    InstanceCreationExpression c =>
+      _typeName(c.constructorName.type.toSource()),
+    MethodInvocation(target: null, :final methodName)
+        when _upper.hasMatch(methodName.name) =>
+      methodName.name,
+    _ => null,
+  };
 }
 
 /// Names declared inside a declaration, including nested closures.

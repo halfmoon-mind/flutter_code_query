@@ -116,6 +116,13 @@ class CodeIndex {
 
   final _routerFields = <String>{};
 
+  /// Declared or constructed types of fields (`Class.field`) and top-level
+  /// variables, for receivers such as `final CartFlow flow;`.
+  final _variableTypes = <String, String>{};
+
+  /// Interfaces each class implements, which calls can dispatch through.
+  final _interfaces = <String, List<String>>{};
+
   /// The type each extension applies to, by extension name.
   final _extensionOn = <String, String>{};
 
@@ -243,6 +250,11 @@ class CodeIndex {
     for (final MapEntry(:key, :value) in index._superclasses.entries) {
       (index._subclasses[value] ??= []).add(key);
     }
+    for (final MapEntry(:key, :value) in index._interfaces.entries) {
+      for (final interface in value) {
+        (index._subclasses[interface] ??= []).add(key);
+      }
+    }
     index._resolveNavigations();
     index._registerRoutes();
     return index;
@@ -289,29 +301,74 @@ class CodeIndex {
       const {},
       maxChainsPerSite);
 
-  /// Where the widget binding a callback root is built: one shortest chain per
-  /// call of the declaration holding the slot. In a widget's `build`, these
-  /// are the constructor calls of the widget, followed only when [widgets].
-  List<Chain> buildPaths(Chain chain, {bool widgets = true}) {
+  /// Where the widget binding a callback root is built: the chains up from
+  /// each call of the declaration holding the slot, and whether the limit cut
+  /// them short. In a widget's `build`, these are the constructor calls of the
+  /// widget, followed only when [widgets].
+  (List<Chain>, bool truncated) buildPaths(Chain chain, {bool widgets = true}) {
     if (chain.rootKind != 'callback' && chain.rootKind != 'callback_factory') {
-      return const [];
+      return (const [], false);
     }
     final owner = chain.hops.first.owner;
-    if (owner == null) return const [];
+    if (owner == null) return (const [], false);
     final callers = !_frameworkMethods.contains(owner.name)
         ? callersOf(owner)
         : widgets
             ? _creationsOf(owner)
             : const <(Ref, int)>[];
-    return [
-      for (final (ref, matches) in callers.take(maxBuildPaths))
-        ..._walkUp(_hop(ref, matches), {owner}, 1).$1,
-    ];
+    // Every caller's first chain comes before any caller's second, so the
+    // limit keeps as many distinct callers as it can.
+    final perCaller = <List<Chain>>[];
+    var truncated = false;
+    for (final (ref, matches) in callers) {
+      if (perCaller.length >= maxBuildPaths) {
+        truncated = true;
+        break;
+      }
+      final (found, cut) = _walkUp(_hop(ref, matches), {owner}, maxBuildPaths);
+      truncated |= cut;
+      perCaller.add(found);
+    }
+    final builds = <Chain>[];
+    for (var round = 0; builds.length < maxBuildPaths; round++) {
+      final layer = [
+        for (final found in perCaller)
+          if (round < found.length) found[round],
+      ];
+      if (layer.isEmpty) break;
+      builds.addAll(layer.take(maxBuildPaths - builds.length));
+    }
+    final total = perCaller.fold<int>(0, (n, found) => n + found.length);
+    return (builds, truncated || total > builds.length);
   }
 
   /// The destination along one chain, substituting forwarded arguments.
   Evaluation destination(NavigationSite site, Chain chain) =>
       _evaluate(site.destination, _envs(chain).last);
+
+  /// The conditional or switch expression a destination picks its value
+  /// from: written in the call, or held by a final local the call names.
+  Expression? choiceExpression(NavigationSite site, Chain chain) {
+    var expression = site.destination;
+    final scope = chain.hops.last.owner?._scope;
+    for (var i = 0; i < 8; i++) {
+      while (expression is ParenthesizedExpression) {
+        expression = expression.expression;
+      }
+      if (expression is ConditionalExpression ||
+          expression is SwitchExpression) {
+        return expression;
+      }
+      final local = expression is SimpleIdentifier
+          ? scope?.finals[expression.name]
+          : null;
+      if (local == null || local.length != 1 || local.single == null) {
+        return null;
+      }
+      expression = local.single!;
+    }
+    return null;
+  }
 
   /// What [expression] evaluates to at the end of [chain].
   Evaluation evaluateAt(Expression expression, Chain chain) =>

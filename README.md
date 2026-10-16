@@ -96,13 +96,14 @@ flutter_code_query check
   conditions decide whether a callback or listener is set up, and `on_event`
   ones are checked when it fires; conditions without a `phase` hold whenever
   the root declaration runs. The condition picking an `alternative`, such as
-  `cond` in `cond ? '/a' : '/b'`, is listed too. Chains whose literal arguments
+  `cond` in `cond ? '/a' : '/b'`, is listed too when the choice is written in
+  the call or in a final local it names. Chains whose literal arguments
   contradict a condition, such as `open(context, false)` into `if (replace)`,
   are dropped.
 - `prefixMatches` and `dynamicSites` list navigation calls that could reach
-  the route without being candidates. `truncatedSites` and `parseErrors` list
-  places where candidates for any route can be missing. Each appears only when
-  it is not empty.
+  the route without being candidates. `truncatedSites`, `skippedLinks` and
+  `parseErrors` mark places where candidates for any route can be missing.
+  Each appears only when it is not empty.
 
 ## Agent instructions
 
@@ -129,8 +130,10 @@ The output is static source evidence: cite its `at` locations. A candidate is
 a possible chain, and conditions are unevaluated expressions; to say who can
 trigger one, trace the state a condition names in source. A hop with
 `deferred` or `nameMatches`, and a destination marked `templated` or
-`alternative`, is unconfirmed. When the query output contains
-`prefixMatches`, `dynamicSites`, `truncatedSites` or `parseErrors`, say the
+`alternative`, is unconfirmed. A root of kind `ambiguous_callers`,
+`no_callers`, `cycle`, `depth_limit` or `no_owner` means the triggering
+control was not found. When the query output contains `prefixMatches`,
+`dynamicSites`, `truncatedSites`, `skippedLinks` or `parseErrors`, say the
 candidate list can be incomplete.
 ```
 
@@ -156,9 +159,11 @@ candidate list can be incomplete.
   chain per call site. Callbacks may be tear-offs (`onTap: c.open`), closures
   in conditional, switch or `??` expressions, callback factories, or
   callbacks passed to a parameter named `on*`. Calls resolve through local
-  functions, the enclosing class, project superclasses, mixins and subclass
-  overrides, `part` files, import prefixes, and receivers whose type is
-  written in the source (`C.m()`, `C().m()`, `getIt<C>().m()`). On a
+  functions, the enclosing class, project superclasses and their mixins,
+  subclass overrides and `implements`, `part` files, imports and import
+  prefixes, and receivers whose type is written in the source (`C.m()`,
+  `C().m()`, `getIt<C>().m()`) or declared on a field, parameter or local
+  (`final CartFlow flow;`). On a
   `BuildContext`, a `GoRouter` or a class outside the project, such as
   `Navigator.of(context)`, a call links only to project extension members on
   that type, so go_router's own `context.pop()` never reaches a project
@@ -207,17 +212,17 @@ each finding. A usage error or a missing `lib/` exits 2.
   a config object (`MenuItem(onTap: ...)`) a widget binds later.
 - go_router_builder routes are all registered, even a library's top-level
   `@TypedGoRoute` that no `GoRouter` includes.
-- A navigation site keeps at most 200 chains; sites past that appear under
-  `truncatedSites`.
+- A navigation site keeps at most 200 chains, and a callback root at most 20
+  `builtBy` paths; sites past either limit appear under `truncatedSites`.
 - Symbolic links under `lib/` are not followed; `check` counts them in
-  `stats.skippedLinks`.
+  `stats.skippedLinks` and `query` in `skippedLinks`.
 - Not supported yet: Navigator 1.0, auto_route, `Link` widgets, and API data
   flow.
 
 ## Versions
 
 The tool does not depend on Flutter, so the app's Flutter version needs no
-pinning. It runs on Dart 3.5 or later with `analyzer` 7 to 12; pub picks the
+pinning. It runs on Dart 3.5 or later with `analyzer` 7.6 to 12; pub picks the
 newest your SDK allows, and analyzer 12 (Dart 3.9+) parses dot shorthands.
 Syntax newer than that analyzer, such as Dart 3.13 primary constructors,
 shows up as `parse_error` findings instead of being dropped silently.
