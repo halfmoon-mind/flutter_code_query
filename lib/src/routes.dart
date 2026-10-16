@@ -202,11 +202,12 @@ extension _Routes on CodeIndex {
           (_variable(item.pattern), realTarget),
         _ => (null, null),
       };
-      final list = iterable == null ? null : _listOf(iterable, env);
+      final list =
+          iterable == null ? null : _literalOf<ListLiteral>(iterable, env);
       if (name == null || list == null) return null;
-      final (elements, _) = _elementsOf(list.$1, list.$2);
+      final (elements, _) = _elementsOf<Expression>(list.$1, list.$2);
       return [
-        for (final (element, elementEnv) in elements)
+        for (final (element, elementEnv, _) in elements)
           ({...env.arguments, name: (element, elementEnv)}, element),
       ];
     }

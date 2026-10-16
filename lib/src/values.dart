@@ -64,12 +64,19 @@ extension _Values on CodeIndex {
       _Env(build, build.file, const {},
           fields: _fieldsOf(creation.name, creation.arguments, env));
 
-  /// Fields a constructor call of [className] sets through `this.x`
-  /// parameters or initializers.
+  /// Final fields a constructor call of [className] sets through `this.x`
+  /// parameters or initializers; other fields can change later.
   Map<String, (Expression, _Env)> _fieldsOf(
       String className, ArgumentList? arguments, _Env env) {
     final constructor = _constructor(className);
-    if (constructor == null) return const {};
+    if (constructor == null) {
+      // An extension type's representation field takes the one argument.
+      final field = _representations[className];
+      final value = arguments?.arguments.singleOrNull;
+      return field == null || value == null || value is NamedExpression
+          ? const {}
+          : {field: (value, env)};
+    }
     final inner = _call(arguments, constructor, env);
     final node = constructor.node as ConstructorDeclaration;
     final fields = <String, (Expression, _Env)>{};
@@ -86,24 +93,48 @@ extension _Values on CodeIndex {
         in node.initializers.whereType<ConstructorFieldInitializer>()) {
       fields[initializer.fieldName.name] = (initializer.expression, inner);
     }
+    fields
+        .removeWhere((name, _) => _instanceFields['$className.$name'] == false);
     return fields;
   }
 
-  /// A field of the object an expression constructs, following bound
-  /// parameters and final locals: `item.path` where `item` holds
-  /// `NavigationItem(path: '/products')`.
-  (Expression, _Env)? _objectField(
+  /// What a field of the object an expression constructs holds, or else a
+  /// getter its class declares, read with those fields: `item.path` where
+  /// `item` holds `NavigationItem(path: '/products')`.
+  Evaluation? _objectField(
       Expression object, String field, _Env env, int depth) {
+    if (_objectOf(object, env, depth)
+        case (final className, final arguments, final caller)) {
+      // Classes of that name in several libraries can't be told apart.
+      final libraries = {
+        for (final d in _decls[className] ?? const <Decl>[])
+          if (d.className == className) d.file.library,
+      };
+      if (libraries.length > 1) return null;
+      final fields = _fieldsOf(className, arguments, caller);
+      if (fields[field] case (final value, final at)) {
+        return _evaluate(value, at, depth + 1);
+      }
+      if (_getter(className, field) case final getter?) {
+        return _callValue(getter, null, caller, field, depth, fields);
+      }
+    }
+    return null;
+  }
+
+  /// The constructor call an expression holds, following bound parameters,
+  /// final locals, constants and static fields: the class, the arguments and
+  /// the environment they evaluate in.
+  (String, ArgumentList, _Env)? _objectOf(
+      Expression object, _Env env, int depth) {
     if (depth > 8) return null;
     switch (object) {
       case SimpleIdentifier():
         final bound = env.arguments[object.name] ?? env.fields[object.name];
-        if (bound != null) {
-          return _objectField(bound.$1, field, bound.$2, depth + 1);
-        }
+        if (bound != null) return _objectOf(bound.$1, bound.$2, depth + 1);
         final local = env.owner?._scope.finals[object.name];
         if (local != null && local.length == 1 && local.single != null) {
-          return _objectField(local.single!, field, env, depth + 1);
+          return _objectOf(local.single!, env, depth + 1);
         }
       case MethodInvocation(
             target: null,
@@ -111,63 +142,69 @@ extension _Values on CodeIndex {
             :final argumentList
           )
           when _upper.hasMatch(methodName.name):
-        return _fieldsOf(methodName.name, argumentList, env)[field];
+        return (methodName.name, argumentList, env);
       case InstanceCreationExpression(
             :final constructorName,
             :final argumentList
           )
           when constructorName.name == null:
-        return _fieldsOf(_typeName(constructorName.type.toSource()),
-            argumentList, env)[field];
+        return (_typeName(constructorName.type.toSource()), argumentList, env);
     }
-    return null;
+    return switch (_constantOf(object, env)) {
+      (final value, final at) => _objectOf(value, at, depth + 1),
+      null => null,
+    };
   }
 
-  /// A list literal's elements in order, with spreads of known lists expanded.
-  /// Not [exact] when an `if` or `for` element or an unknown spread makes the
-  /// positions uncertain.
-  (List<(Expression, _Env)>, bool exact) _elementsOf(
-      ListLiteral literal, _Env env,
-      [int depth = 0]) {
-    final out = <(Expression, _Env)>[];
-    var exact = true;
-    for (final element in literal.elements) {
-      if (element is Expression) {
-        out.add((element, env));
-        continue;
-      }
-      // An `if` or `for` element may or may not add its value at this point.
-      if (element is IfElement || element is ForElement) {
-        exact = false;
-        for (final value in switch (element) {
-          IfElement e => [e.thenElement, e.elseElement],
-          ForElement e => [e.body],
-          _ => const <CollectionElement?>[],
-        }) {
-          if (value is Expression) out.add((value, env));
+  /// A list or map literal's elements of type [T] in order, with spreads of
+  /// known literals expanded. [maybe] marks one an `if` or `for` element may
+  /// leave out or repeat. Not [complete] when an unknown spread leaves
+  /// elements out.
+  (List<(T, _Env, bool maybe)>, bool complete)
+      _elementsOf<T extends CollectionElement>(TypedLiteral literal, _Env env) {
+    final out = <(T, _Env, bool)>[];
+    var complete = true;
+    void addAll(TypedLiteral literal, _Env env, bool maybe, int depth) {
+      void add(CollectionElement? element, bool maybe) {
+        if (element is T) {
+          out.add((element, env, maybe));
+        } else if (element is IfElement) {
+          add(element.thenElement, true);
+          add(element.elseElement, true);
+        } else if (element is ForElement) {
+          add(element.body, true);
+        } else if (element != null) {
+          final inner = element is SpreadElement && depth < 4
+              ? _literalOf<TypedLiteral>(element.expression, env)
+              : null;
+          if (inner == null) {
+            complete = false;
+          } else {
+            addAll(inner.$1, inner.$2, maybe, depth + 1);
+          }
         }
-        continue;
       }
-      final inner = element is SpreadElement && depth < 4
-          ? _listOf(element.expression, env)
-          : null;
-      if (inner == null) {
-        exact = false;
-        continue;
+
+      for (final element in switch (literal) {
+        ListLiteral(:final elements) ||
+        SetOrMapLiteral(:final elements) =>
+          elements,
+      }) {
+        add(element, maybe);
       }
-      final (items, itemsExact) = _elementsOf(inner.$1, inner.$2, depth + 1);
-      out.addAll(items);
-      exact &= itemsExact;
     }
-    return (out, exact);
+
+    addAll(literal, env, false, 0);
+    return (out, complete);
   }
 
-  /// The list literal an expression names, with the environment its elements
-  /// evaluate in: a bound parameter or widget field, a final local, a
-  /// constant or a static field.
-  (ListLiteral, _Env)? _listOf(Expression e, _Env env, [int depth = 0]) {
+  /// The literal of type [T] an expression names, with the environment its
+  /// elements evaluate in: a bound parameter or widget field, a final local,
+  /// a constant or a static field.
+  (T, _Env)? _literalOf<T extends TypedLiteral>(Expression e, _Env env,
+      [int depth = 0]) {
     if (depth > 8) return null;
-    if (e is ListLiteral) return (e, env);
+    if (e is T) return (e, env);
     final name = switch (e) {
       SimpleIdentifier() => e.name,
       PrefixedIdentifier() when e.prefix.name == 'widget' => e.identifier.name,
@@ -175,32 +212,49 @@ extension _Values on CodeIndex {
     };
     if (name != null) {
       final bound = env.arguments[name] ?? env.fields[name];
-      if (bound != null) return _listOf(bound.$1, bound.$2, depth + 1);
+      if (bound != null) return _literalOf<T>(bound.$1, bound.$2, depth + 1);
       final local = env.owner?._scope.finals[name];
       if (e is SimpleIdentifier &&
           local != null &&
           local.length == 1 &&
           local.single != null) {
-        return _listOf(local.single!, env, depth + 1);
+        return _literalOf<T>(local.single!, env, depth + 1);
       }
       if (e is SimpleIdentifier && env.owner == null) {
         if (_localInitializer(e) case final value?) {
-          return _listOf(value, env, depth + 1);
+          return _literalOf<T>(value, env, depth + 1);
         }
       }
     }
-    // An unqualified static field of the class the code is in, or a constant.
-    final key = e is SimpleIdentifier &&
-            _consts.containsKey('${env.className}.${e.name}')
-        ? '${env.className}.${e.name}'
-        : e.toSource();
-    return switch (_consts[key]?.singleOrNull) {
-      (final file, final ListLiteral list, final className) => (
-          list,
-          _Env.constant(file, className)
-        ),
-      _ => null,
+    return switch (_constantOf(e, env)) {
+      (final value, final at) => _literalOf<T>(value, at, depth + 1),
+      null => null,
     };
+  }
+
+  /// What `map[key]` reads: the value of the last entry with that key, or
+  /// null when none has it. An entry an `if` or `for` element adds, or one
+  /// whose key is unknown, may be the one read, and a map that is not
+  /// constant can change after its initializer.
+  Evaluation _entry(SetOrMapLiteral map, _Env mapEnv, Expression key, _Env env,
+      String source, int depth) {
+    final (entries, complete) = _elementsOf<MapLiteralEntry>(map, mapEnv);
+    final matches = _equalTo(key, env, depth);
+    final values = <Evaluation>[];
+    var found = false;
+    for (final (entry, entryEnv, maybe) in entries.reversed) {
+      final same = matches(entry.key, entryEnv);
+      if (same == false) continue;
+      values.add(_evaluate(entry.value, entryEnv, depth + 1));
+      found = same == true && !maybe;
+      if (found) break;
+    }
+    return Evaluation.of([
+      ...values.reversed,
+      if (!found) Evaluation.nullValue,
+      if (!complete || !map.isConst)
+        Evaluation.unknown(source, 'dynamic_expression'),
+    ]);
   }
 
   /// A unique static, top-level or same-class function a call can name.
@@ -249,13 +303,15 @@ extension _Values on CodeIndex {
     return returns.values;
   }
 
-  /// What a call of a function with known returns evaluates to.
-  Evaluation? _callValue(Decl callee, ArgumentList? arguments, _Env env,
-      String source, int depth) {
+  /// What a call of a function with known returns evaluates to. A getter
+  /// reads [fields] of its object.
+  Evaluation? _callValue(
+      Decl callee, ArgumentList? arguments, _Env env, String source, int depth,
+      [Map<String, (Expression, _Env)> fields = const {}]) {
     final returns = _returns(callee);
     if (returns.isEmpty) return null;
     final inner = arguments == null
-        ? _Env(callee, callee.file, const {})
+        ? _Env(callee, callee.file, const {}, fields: fields)
         : _call(arguments, callee, env);
     if (returns.length > maxAlternatives) {
       return Evaluation.unknown(source, 'alternatives');
@@ -368,14 +424,8 @@ extension _Values on CodeIndex {
           when e.operator.lexeme == '==' || e.operator.lexeme == '!=':
         final equal = e.operator.lexeme == '==';
         if (_nullTest(e, env, depth) case final test?) return test;
-        final a = _enumValue(e.leftOperand, env, depth);
-        final b = _enumValue(e.rightOperand, env, depth);
-        if (a != null && b != null) return (a == b) == equal;
-        final left = _evaluate(e.leftOperand, env, depth + 1);
-        final right = _evaluate(e.rightOperand, env, depth + 1);
-        return left.complete && right.complete
-            ? (left.text == right.text) == equal
-            : null;
+        final same = _equalTo(e.leftOperand, env, depth)(e.rightOperand, env);
+        return same == null ? null : same == equal;
       case SimpleIdentifier():
         final bound = env.arguments[e.name] ?? env.fields[e.name];
         return bound == null ? null : _bool(bound.$1, bound.$2, depth + 1);
@@ -384,6 +434,36 @@ extension _Values on CodeIndex {
         return bound == null ? null : _bool(bound.$1, bound.$2, depth + 1);
     }
     return null;
+  }
+
+  /// Compares values with [e], evaluated once: equal when both are the same
+  /// enum constant, or both evaluate in full to the same text and are not
+  /// written as different kinds of value, such as `1` and `'1'`.
+  bool? Function(Expression, _Env) _equalTo(Expression e, _Env env, int depth) {
+    // The enum constant, the kind a literal or constructor call is written
+    // as, and the value.
+    ((String, String)?, String?, Evaluation) operand(Expression e, _Env env) =>
+        (
+          _enumValue(e, env, depth),
+          switch (e) {
+            StringLiteral() => 'String',
+            IntegerLiteral() => 'int',
+            _ => switch (_objectOf(e, env, depth)) {
+                // An extension type is its representation at runtime.
+                (final type, _, _) when !_representations.containsKey(type) =>
+                  type,
+                _ => null,
+              },
+          },
+          _evaluate(e, env, depth + 1),
+        );
+    final a = operand(e, env);
+    return (other, otherEnv) {
+      final b = operand(other, otherEnv);
+      if (a.$1 != null && b.$1 != null) return a.$1 == b.$1;
+      if (a.$2 != null && b.$2 != null && a.$2 != b.$2) return false;
+      return a.$3.complete && b.$3.complete ? a.$3.text == b.$3.text : null;
+    };
   }
 
   Evaluation _join(Iterable<Object> parts, _Env env, int depth) {
@@ -456,7 +536,7 @@ extension _Values on CodeIndex {
       case BooleanLiteral():
         return Evaluation('${e.value}', true);
       case IntegerLiteral():
-        return Evaluation(e.literal.lexeme, true);
+        return Evaluation('${e.value ?? e.literal.lexeme}', true);
       case AdjacentStrings():
         return _join(e.strings, env, depth);
       case StringInterpolation():
@@ -484,24 +564,20 @@ extension _Values on CodeIndex {
           return _enumField(type, value, e.identifier.name, depth) ?? unknown();
         }
         if (_objectField(e.prefix, e.identifier.name, env, depth)
-            case (final value, final caller)) {
-          return _evaluate(value, caller, depth + 1).asForwarded;
+            case final value?) {
+          return value.asForwarded;
         }
         // `prefix.kHome` through an import prefix names a top-level constant
         // of the libraries imported with it.
-        if (_prefixes[env.file.library]?[e.prefix.name] case final within?) {
-          return _constant(e.identifier.name, env.file, depth,
-              _visible(within, e.identifier.name));
-        }
-        final key = '${e.prefix.name}.${e.identifier.name}';
-        if (!_consts.containsKey(key)) {
+        final (key, within) = _constantKey(e, env)!;
+        if (within == null && !_consts.containsKey(key)) {
           final getter = _getter(e.prefix.name, e.identifier.name);
           if (getter != null) {
             final value = _callValue(getter, null, env, key, depth);
             if (value != null) return value;
           }
         }
-        return _constant(key, env.file, depth);
+        return _constant(key, env.file, depth, within);
       case PropertyAccess(:final realTarget, :final propertyName)
           when propertyName.name == 'location' &&
               _typedClassOf(realTarget) != null:
@@ -516,50 +592,66 @@ extension _Values on CodeIndex {
           when realTarget is IndexExpression && realTarget.target != null:
         // `items[index].path` over a list literal: that element's field, or
         // every element's when the index is unknown.
-        final list = _listOf(realTarget.target!, env);
+        final list = _literalOf<ListLiteral>(realTarget.target!, env);
         if (list == null) return unknown();
-        final (elements, exact) = _elementsOf(list.$1, list.$2);
+        final (elements, complete) = _elementsOf<Expression>(list.$1, list.$2);
+        final exact = complete && !elements.any((e) => e.$3);
         final index = _evaluate(realTarget.index, env, depth + 1);
         final position = index.complete ? int.tryParse(index.text) : null;
         final chosen = exact && position != null && position < elements.length
             ? [elements[position]]
             : elements;
         return Evaluation.of([
-          for (final (element, elementEnv) in chosen)
-            switch (
-                _objectField(element, propertyName.name, elementEnv, depth)) {
-              (final value, final caller) =>
-                _evaluate(value, caller, depth + 1),
-              null => unknown(),
-            },
+          for (final (element, elementEnv, _) in chosen)
+            _objectField(element, propertyName.name, elementEnv, depth) ??
+                unknown(),
           // An `if` or `for` element, or an unknown spread, can hold others.
           if (!exact || chosen.isEmpty) unknown(),
         ]);
-      case PropertyAccess(
-            realTarget: PrefixedIdentifier(:final prefix, :final identifier),
-            :final propertyName
-          )
+      case PropertyAccess(realTarget: PrefixedIdentifier(:final prefix))
           when _prefixes[env.file.library]?.containsKey(prefix.name) ?? false:
         // `prefix.Paths.home` through an import prefix.
-        return _constant(
-            '${identifier.name}.${propertyName.name}',
-            env.file,
-            depth,
-            _visible(
-                _prefixes[env.file.library]![prefix.name]!, identifier.name));
+        final (key, within) = _constantKey(e, env)!;
+        return _constant(key, env.file, depth, within);
       case PropertyAccess():
         final target = e.realTarget;
         if (_enumValue(target, env, depth) case (final type, final value)) {
           return _enumField(type, value, e.propertyName.name, depth) ??
               unknown();
         }
-        return unknown();
+        // `RouteName.home.displayName`: a field or getter of an object.
+        return _objectField(target, e.propertyName.name, env, depth)
+                ?.asForwarded ??
+            unknown();
+      case ThisExpression():
+        // In an extension type, `this` is the representation value.
+        if (env.fields[_representations[env.className]]
+            case (final value, final caller)) {
+          return _evaluate(value, caller, depth + 1).asForwarded;
+        }
+      case IndexExpression(:final target?):
+        // `titles[key]` over a map literal.
+        final map = _literalOf<SetOrMapLiteral>(target, env);
+        return map == null
+            ? unknown()
+            : _entry(map.$1, map.$2, e.index, env, e.toSource(), depth);
+      case PostfixExpression() when e.operator.lexeme == '!':
+        // Any value but null; a value that can only be null stays unknown.
+        final values = [
+          for (final value in _evaluate(e.operand, env, depth + 1).expand())
+            if (!value.isNull) value,
+        ];
+        return values.isEmpty ? unknown() : Evaluation.of(values);
       case BinaryExpression() when e.operator.lexeme == '??':
         final left = _evaluate(e.leftOperand, env, depth + 1);
         if (left.isNull) return _evaluate(e.rightOperand, env, depth + 1);
         if (left.complete) return left;
         // Unknown at runtime: either side can be the value.
-        return Evaluation.of([left, _evaluate(e.rightOperand, env, depth + 1)]);
+        return Evaluation.of([
+          for (final value in left.expand())
+            if (!value.isNull) value,
+          _evaluate(e.rightOperand, env, depth + 1),
+        ]);
       case ConditionalExpression():
         final test = _nullTest(e.condition, env, depth) ??
             _bool(e.condition, env, depth);
@@ -647,15 +739,15 @@ extension _Values on CodeIndex {
     final className = env.className;
     if (_getter(className, name) case final getter?
         when !_consts.containsKey('$className.$name')) {
-      final value = _callValue(getter, null, env, name, depth);
+      // A State's fields are its widget's, which its getters don't read.
+      final value = _callValue(getter, null, env, name, depth,
+          _stateOf.containsKey(className) ? const {} : env.fields);
       if (value != null) return value;
     }
-    return _constant(
-        className != null && _consts.containsKey('$className.$name')
-            ? '$className.$name'
-            : name,
-        env.file,
-        depth);
+    return switch (_constantKey(e, env)) {
+      (final key, _) => _constant(key, env.file, depth),
+      null => Evaluation.unknown(name, 'dynamic_expression'),
+    };
   }
 
   /// The `path:` of a `Uri(...)` call, and whether it also sets a query.
@@ -743,6 +835,69 @@ extension _Values on CodeIndex {
   /// only [within] when a prefix names the libraries.
   Evaluation _constant(String key, SourceFile from, int depth,
       [Set<String>? within]) {
+    final candidates = _constantsFor(key, from, within);
+    if (candidates.length != 1) {
+      return Evaluation.unknown(key,
+          candidates.isEmpty ? 'dynamic_expression' : 'ambiguous_constant');
+    }
+    final (file, initializer, className) = candidates.single;
+    return _evaluate(initializer, _Env.constant(file, className), depth + 1);
+  }
+
+  /// The initializer of the constant or static field an expression names,
+  /// with the environment it evaluates in.
+  (Expression, _Env)? _constantOf(Expression e, _Env env) {
+    if (_constantKey(e, env) case (final key, final within)) {
+      if (_constantsFor(key, env.file, within)
+          case [(final file, final initializer, final className)]) {
+        return (initializer, _Env.constant(file, className));
+      }
+    }
+    return null;
+  }
+
+  /// The key of the constant or static field an expression names, and the
+  /// libraries an import prefix limits it to: unqualified in its class,
+  /// `Class.field`, or through a prefix. Null for a local, or a member of the
+  /// class the code is in, which hides a top-level constant.
+  (String, Set<String>?)? _constantKey(Expression e, _Env env) {
+    final prefixes = _prefixes[env.file.library] ?? const {};
+    final className = env.className;
+    switch (e) {
+      case SimpleIdentifier(:final name):
+        if (env.owner?._scope.locals.contains(name) ?? false) return null;
+        if (_consts.containsKey('$className.$name')) {
+          return ('$className.$name', null);
+        }
+        if (className != null &&
+            (_instanceFields.containsKey('$className.$name') ||
+                (_decls[name]?.any((d) => d.className == className) ??
+                    false))) {
+          return null;
+        }
+        return (name, null);
+      case PrefixedIdentifier(:final prefix, :final identifier):
+        return switch (prefixes[prefix.name]) {
+          final within? => (identifier.name, _visible(within, identifier.name)),
+          null => ('${prefix.name}.${identifier.name}', null),
+        };
+      case PropertyAccess(
+            realTarget: PrefixedIdentifier(:final prefix, :final identifier),
+            :final propertyName
+          )
+          when prefixes.containsKey(prefix.name):
+        return (
+          '${identifier.name}.${propertyName.name}',
+          _visible(prefixes[prefix.name]!, identifier.name)
+        );
+    }
+    return null;
+  }
+
+  /// The declarations a constant key can name from [from], as [_constant]
+  /// prefers them.
+  List<(SourceFile, Expression, String?)> _constantsFor(
+      String key, SourceFile from, Set<String>? within) {
     final matches = [
       for (final m
           in _consts[key] ?? const <(SourceFile, Expression, String?)>[])
@@ -750,21 +905,17 @@ extension _Values on CodeIndex {
     ];
     final sameLibrary =
         matches.where((m) => m.$1.library == from.library).toList();
+    // A private name is visible only in its own library.
+    if (key.startsWith('_') || key.contains('._')) return sameLibrary;
     final imports =
         _visible(_imports[from.library] ?? const [], key.split('.').first);
     final imported =
         matches.where((m) => imports.contains(m.$1.library)).toList();
-    final candidates = sameLibrary.isNotEmpty
+    return sameLibrary.isNotEmpty
         ? sameLibrary
         : imported.isNotEmpty
             ? imported
             : matches;
-    if (candidates.length != 1) {
-      return Evaluation.unknown(key,
-          candidates.isEmpty ? 'dynamic_expression' : 'ambiguous_constant');
-    }
-    final (file, initializer, className) = candidates.single;
-    return _evaluate(initializer, _Env.constant(file, className), depth + 1);
   }
 }
 

@@ -83,9 +83,21 @@ class _Collector extends RecursiveAstVisitor<void> {
   }
 
   @override
-  void visitExtensionTypeDeclaration(ExtensionTypeDeclaration node) => _inClass(
-      _afterConst(node.typeKeyword.next!).lexeme,
-      () => super.visitExtensionTypeDeclaration(node));
+  void visitExtensionTypeDeclaration(ExtensionTypeDeclaration node) {
+    final name = _afterConst(node.typeKeyword.next!);
+    // `RouteInfo(String path)`: the representation field is the last name in
+    // the first parentheses after the type parameters, whose bounds can hold
+    // parentheses of their own.
+    var open = name.next!;
+    if (open.lexeme == '<') open = open.endGroup?.next ?? open;
+    while (open.lexeme != '(' && !open.isEof) {
+      open = open.next!;
+    }
+    var field = open.endGroup?.previous;
+    if (field?.lexeme == ',') field = field!.previous;
+    if (field != null) index._representations[name.lexeme] = field.lexeme;
+    _inClass(name.lexeme, () => super.visitExtensionTypeDeclaration(node));
+  }
 
   @override
   void visitMethodDeclaration(MethodDeclaration node) =>
@@ -119,6 +131,10 @@ class _Collector extends RecursiveAstVisitor<void> {
         }
       }
     } else {
+      for (final variable in node.fields.variables) {
+        index._instanceFields['$_class.${variable.name.lexeme}'] =
+            node.fields.isFinal;
+      }
       // A field typed as, or initialized from, a BuildContext or GoRouter.
       for (final variable in node.fields.variables) {
         final value = (variable.initializer?.toSource() ?? '')

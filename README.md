@@ -173,12 +173,16 @@ candidate list can be incomplete.
   (preferring the imported declaration), getters and functions by their return
   values, enum `.name`, `.index` and constructor fields, dot shorthands
   (`.settings`) when one project enum has that constant, forwarded parameters
-  with defaults, widget and object fields set by a constructor call, list
-  elements by index (`items[index].path`; spreads of known lists are expanded,
-  and an `if` or `for` element makes every element a possible value),
-  conditional and switch expressions, `??` and null tests, `Uri(path:
-  ...).toString()`, `namedLocation(name)`, `TypedRoute().location`, and record
-  fields of a Riverpod `Provider` default.
+  with defaults, final widget and object fields set by a constructor call,
+  getters of such objects and of extension types (`RouteName.home.displayName`
+  on a `static const` object), list elements by index (`items[index].path`;
+  spreads of known lists are expanded, and an `if` or `for` element makes
+  every element a possible value), map entries by key (`titles[key]`; spreads
+  of known maps are expanded, an entry an `if` or `for` element adds or whose
+  key is unknown is a possible value, and a map that is not `const` can
+  change), conditional and switch expressions, `??`, `!` and null tests,
+  `Uri(path: ...).toString()`, `namedLocation(name)`, `TypedRoute().location`,
+  and record fields of a Riverpod `Provider` default.
 - **Conditions**: if/else, conditional and switch branches (including earlier
   cases that must not match), `&&`/`||`/`??` operands, loops and collection
   `for`, and early-exit guards, including else-if chains and `continue`.

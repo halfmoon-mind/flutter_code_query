@@ -126,6 +126,12 @@ class CodeIndex {
   /// The type each extension applies to, by extension name.
   final _extensionOn = <String, String>{};
 
+  /// The representation field of each extension type, by its name.
+  final _representations = <String, String>{};
+
+  /// Instance fields as `Class.field`, each with whether it is final.
+  final _instanceFields = <String, bool>{};
+
   /// Import prefixes (`import 'x.dart' as x;`) by library, each with the
   /// project libraries it imports.
   final _prefixes = <String, Map<String, List<_Namespace>>>{};

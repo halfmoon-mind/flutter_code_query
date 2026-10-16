@@ -2,7 +2,7 @@ name: flutter_code_query
 description: >-
   Fast static navigation queries and checks for Flutter apps using go_router.
   Parses lib/ without type resolution and prints JSON for coding agents.
-version: 0.1.0
+version: 0.1.1
 repository: https://github.com/halfmoon-mind/flutter_code_query
 issue_tracker: https://github.com/halfmoon-mind/flutter_code_query/issues
 topics:
