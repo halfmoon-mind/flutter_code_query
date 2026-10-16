@@ -114,6 +114,7 @@ class CodeIndex {
   final _stateOf = <String, String>{};
 
   final _routerFields = <String>{};
+  final _typedClasses = <String>{};
 
   final _imports = <String, Set<String>>{};
 

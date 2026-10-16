@@ -558,4 +558,108 @@ class W extends StatelessWidget {
     expect(index.routes, hasLength(1));
     expect(index.parseErrors.single.at, 'lib/locked/');
   });
+
+  test('registers go_router_builder typed routes and their navigation', () {
+    final index = project({
+      'routes.dart': r'''
+@TypedGoRoute<HomeRoute>(
+  path: '/',
+  routes: [TypedGoRoute<DetailRoute>(path: 'detail/:id')],
+)
+class HomeRoute extends GoRouteData {
+  const HomeRoute();
+}
+
+class DetailRoute extends GoRouteData {
+  const DetailRoute({required this.id});
+  final String id;
+}
+
+class SettingsRoute extends GoRouteData {
+  const SettingsRoute();
+  static const routes = [TypedGoRoute<SettingsRoute>(path: '/settings')];
+}
+
+@TypedStatefulShellRoute<ShellData>(
+  branches: [
+    TypedStatefulShellBranch<SettingsBranch>(routes: SettingsRoute.routes),
+  ],
+)
+class ShellData extends StatefulShellRouteData {}
+''',
+      'screen.dart': r'''
+class W extends StatelessWidget {
+  W(this.shell);
+  final StatefulNavigationShell shell;
+  Widget build(BuildContext context) => Column(children: [
+        T(onTap: () => const HomeRoute().go(context)),
+        T(onTap: () => DetailRoute(id: '1').push(context)),
+        T(onTap: () => context.go(const SettingsRoute().location)),
+        T(onTap: () => shell.goBranch(0)),
+      ]);
+}
+''',
+    });
+    expect([
+      for (final r in routeList(index)['routes'] as List) (r as Map)['path']
+    ], unorderedEquals(['/', '/detail/:id', '/settings']));
+    expect(candidates(index, '/').single['destination'],
+        {'expression': 'const HomeRoute()', 'routeClass': 'HomeRoute'});
+    expect(candidates(index, '/detail/:id'), hasLength(1));
+    expect(
+        candidates(index, '/settings')
+            .map((c) =>
+                (c['destination'] as Map)['value'] ??
+                (c['destination'] as Map)['branch'])
+            .toSet(),
+        {'/settings', 0});
+  });
+
+  test('expands routes built in a loop over a config list', () {
+    final index = project({
+      'router.dart': r'''
+class NavigationItem {
+  const NavigationItem({required this.path, this.routes = const []});
+  final String path;
+  final List<RouteBase> routes;
+}
+
+final routerProvider = Provider((ref) {
+  final items = [
+    NavigationItem(path: '/products', routes: [GoRoute(path: ':id')]),
+    NavigationItem(path: '/todos'),
+  ];
+  return GoRouter(routes: [
+    for (final (index, item) in items.indexed)
+      GoRoute(
+        path: item.path,
+        routes: item.routes,
+        pageBuilder: (context, _) =>
+            Page(child: Shell(items: items, index: index)),
+      ),
+  ]);
+});
+''',
+      'shell.dart': r'''
+class Shell extends StatelessWidget {
+  const Shell({required this.items, required this.index});
+  final List<NavigationItem> items;
+  final int index;
+
+  Widget build(BuildContext context) {
+    void select(int i) => context.go(items[i].path);
+    return NavigationBar(onDestinationSelected: select);
+  }
+}
+''',
+    });
+    expect([
+      for (final r in routeList(index)['routes'] as List) (r as Map)['path']
+    ], unorderedEquals(['/products', '/products/:id', '/todos']));
+    for (final route in ['/products', '/todos']) {
+      final candidate = candidates(index, route).single;
+      expect(candidate['root'], containsPair('slot', 'onDestinationSelected'));
+      expect(candidate['destination'], containsPair('alternative', true));
+    }
+  });
 }

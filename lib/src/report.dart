@@ -48,7 +48,8 @@ List<_Site> _sites(CodeIndex index) {
       final plain = index.destination(site, chain);
       // Widget constructor calls matter only when the destination needs them.
       final builds = index.buildPaths(chain,
-          widgets: site.kind != 'branch' && !plain.complete);
+          widgets:
+              site.kind != 'branch' && site.kind != 'typed' && !plain.complete);
       for (final build in builds.isEmpty ? const <Chain?>[null] : builds) {
         final full = build == null
             ? chain
@@ -57,6 +58,10 @@ List<_Site> _sites(CodeIndex index) {
         if (!index.feasible(full)) continue;
         if (site.kind == 'branch') {
           paths.add(_Path(chain, build, null, index.branchIndex(site, full)));
+          continue;
+        }
+        if (site.kind == 'typed') {
+          paths.add(_Path(chain, build, null, null));
           continue;
         }
         final destination =
@@ -76,6 +81,15 @@ List<_Site> _sites(CodeIndex index) {
 /// unknown parts matched them.
 (List<RouteDecl>, bool templated) _targets(
     CodeIndex index, NavigationSite site, _Path path) {
+  if (site.kind == 'typed') {
+    return (
+      [
+        for (final route in index.routes)
+          if (route.typedClass == site.typedClass) route,
+      ],
+      false,
+    );
+  }
   if (site.kind == 'branch') {
     return (
       [
@@ -386,7 +400,9 @@ Map<String, Object?> _candidate(
         if (destination.forwarded) 'forwarded': true,
         if (templated) 'templated': true,
         if (path.alternative) 'alternative': true,
-      } else
+      } else if (site.kind == 'typed')
+        'routeClass': site.typedClass
+      else
         'branch': path.branch ?? 'any',
     },
     'conditions': [

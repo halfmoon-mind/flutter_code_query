@@ -9,12 +9,30 @@ extension _Linking on CodeIndex {
     for (final (file, node, owner, className, kind, inExtension)
         in _candidates) {
       final receiver = node.realTarget;
+      final typed = kind == 'location' && receiver != null
+          ? _typedClassOf(receiver)
+          : null;
       final navigates = kind == 'branch' ||
+          typed != null ||
           (receiver == null ? inExtension : _isRouterReceiver(receiver));
       if (!navigates) continue;
-      navigations.add(NavigationSite(file, node, owner, className, kind));
+      navigations.add(NavigationSite(
+          file, node, owner, className, typed == null ? kind : 'typed',
+          typedClass: typed));
       _refs[node.methodName.name]?.removeWhere((r) => identical(r.node, node));
     }
+  }
+
+  /// The go_router_builder route class a receiver constructs, as in
+  /// `const HomeRoute().go(context)`.
+  String? _typedClassOf(Expression target) {
+    final type = switch (target) {
+      InstanceCreationExpression c =>
+        _typeName(c.constructorName.type.toSource()),
+      MethodInvocation(target: null, :final methodName) => methodName.name,
+      _ => null,
+    };
+    return _typedClasses.contains(type) ? type : null;
   }
 
   bool _isRouterReceiver(Expression target) {

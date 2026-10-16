@@ -50,15 +50,27 @@ extension _Values on CodeIndex {
         absent.add(name);
       }
     }
+    // A local function sees the bindings of the declaration around it.
+    if (callee.parent != null) {
+      return _Env(callee, callee.file, {...env.arguments, ...bound},
+          absent: {...env.absent, ...absent}, fields: env.fields);
+    }
     return _Env(callee, callee.file, bound, absent: absent);
   }
 
   /// The environment of a widget's `build` reached from a constructor call:
   /// fields set through `this.x` parameters or initializers.
-  _Env _widgetEnv(Ref creation, Decl build, _Env env) {
-    final constructor = _constructor(creation.name);
-    if (constructor == null) return _Env(build, build.file, const {});
-    final inner = _call(creation.arguments, constructor, env);
+  _Env _widgetEnv(Ref creation, Decl build, _Env env) =>
+      _Env(build, build.file, const {},
+          fields: _fieldsOf(creation.name, creation.arguments, env));
+
+  /// Fields a constructor call of [className] sets through `this.x`
+  /// parameters or initializers.
+  Map<String, (Expression, _Env)> _fieldsOf(
+      String className, ArgumentList? arguments, _Env env) {
+    final constructor = _constructor(className);
+    if (constructor == null) return const {};
+    final inner = _call(arguments, constructor, env);
     final node = constructor.node as ConstructorDeclaration;
     final fields = <String, (Expression, _Env)>{};
     for (final parameter in node.parameters.parameters) {
@@ -74,7 +86,77 @@ extension _Values on CodeIndex {
         in node.initializers.whereType<ConstructorFieldInitializer>()) {
       fields[initializer.fieldName.name] = (initializer.expression, inner);
     }
-    return _Env(build, build.file, const {}, fields: fields);
+    return fields;
+  }
+
+  /// A field of the object an expression constructs, following bound
+  /// parameters and final locals: `item.path` where `item` holds
+  /// `NavigationItem(path: '/products')`.
+  (Expression, _Env)? _objectField(
+      Expression object, String field, _Env env, int depth) {
+    if (depth > 8) return null;
+    switch (object) {
+      case SimpleIdentifier():
+        final bound = env.arguments[object.name] ?? env.fields[object.name];
+        if (bound != null) {
+          return _objectField(bound.$1, field, bound.$2, depth + 1);
+        }
+        final local = env.owner?._scope.finals[object.name];
+        if (local != null && local.length == 1 && local.single != null) {
+          return _objectField(local.single!, field, env, depth + 1);
+        }
+      case MethodInvocation(
+            target: null,
+            :final methodName,
+            :final argumentList
+          )
+          when _upper.hasMatch(methodName.name):
+        return _fieldsOf(methodName.name, argumentList, env)[field];
+      case InstanceCreationExpression(
+            :final constructorName,
+            :final argumentList
+          )
+          when constructorName.name == null:
+        return _fieldsOf(_typeName(constructorName.type.toSource()),
+            argumentList, env)[field];
+    }
+    return null;
+  }
+
+  /// The list literal an expression names, with the environment its elements
+  /// evaluate in: a bound parameter or widget field, a final local, a
+  /// constant or a static field.
+  (ListLiteral, _Env)? _listOf(Expression e, _Env env, [int depth = 0]) {
+    if (depth > 8) return null;
+    if (e is ListLiteral) return (e, env);
+    final name = switch (e) {
+      SimpleIdentifier() => e.name,
+      PrefixedIdentifier() when e.prefix.name == 'widget' => e.identifier.name,
+      _ => null,
+    };
+    if (name != null) {
+      final bound = env.arguments[name] ?? env.fields[name];
+      if (bound != null) return _listOf(bound.$1, bound.$2, depth + 1);
+      final local = env.owner?._scope.finals[name];
+      if (e is SimpleIdentifier &&
+          local != null &&
+          local.length == 1 &&
+          local.single != null) {
+        return _listOf(local.single!, env, depth + 1);
+      }
+      if (e is SimpleIdentifier && env.owner == null) {
+        if (_localInitializer(e) case final value?) {
+          return _listOf(value, env, depth + 1);
+        }
+      }
+    }
+    return switch (_consts[e.toSource()]?.singleOrNull) {
+      (final file, final ListLiteral list, final className) => (
+          list,
+          _Env.constant(file, className)
+        ),
+      _ => null,
+    };
   }
 
   /// A unique static, top-level or same-class function a call can name.
@@ -342,6 +424,10 @@ extension _Values on CodeIndex {
         if (_enumValue(e.prefix, env, depth) case (final type, final value)) {
           return _enumField(type, value, e.identifier.name, depth) ?? unknown();
         }
+        if (_objectField(e.prefix, e.identifier.name, env, depth)
+            case (final value, final caller)) {
+          return _evaluate(value, caller, depth + 1).asForwarded;
+        }
         final key = '${e.prefix.name}.${e.identifier.name}';
         if (!_consts.containsKey(key)) {
           final getter = _getter(e.prefix.name, e.identifier.name);
@@ -351,6 +437,36 @@ extension _Values on CodeIndex {
           }
         }
         return _constant(key, env.file, depth);
+      case PropertyAccess(:final realTarget, :final propertyName)
+          when propertyName.name == 'location' &&
+              _typedClassOf(realTarget) != null:
+        // `const HomeRoute().location` from go_router_builder.
+        final type = _typedClassOf(realTarget);
+        return _routeTemplate([
+              for (final route in routes)
+                if (route.typedClass == type) route.path,
+            ]) ??
+            unknown();
+      case PropertyAccess(:final realTarget, :final propertyName)
+          when realTarget is IndexExpression && realTarget.target != null:
+        // `items[index].path` over a list literal: that element's field, or
+        // every element's when the index is unknown.
+        final list = _listOf(realTarget.target!, env);
+        if (list == null) return unknown();
+        final (literal, listEnv) = list;
+        final elements = literal.elements.whereType<Expression>().toList();
+        final index = _evaluate(realTarget.index, env, depth + 1);
+        final position = index.complete ? int.tryParse(index.text) : null;
+        return Evaluation.of([
+          for (final element in position != null && position < elements.length
+              ? [elements[position]]
+              : elements)
+            switch (_objectField(element, propertyName.name, listEnv, depth)) {
+              (final value, final caller) =>
+                _evaluate(value, caller, depth + 1),
+              null => unknown(),
+            },
+        ]);
       case PropertyAccess():
         final target = e.realTarget;
         if (_enumValue(target, env, depth) case (final type, final value)) {
@@ -443,6 +559,11 @@ extension _Values on CodeIndex {
     if (env.fields[name] case (final value, final caller)) {
       return _evaluate(value, caller, depth + 1).asForwarded;
     }
+    if (env.owner == null) {
+      if (_localInitializer(e) case final value?) {
+        return _evaluate(value, env, depth + 1);
+      }
+    }
     final className = env.className;
     if (_getter(className, name) case final getter?
         when !_consts.containsKey('$className.$name')) {
@@ -484,12 +605,17 @@ extension _Values on CodeIndex {
     if (first == null) return null;
     final name = _evaluate(first, env, depth + 1);
     if (!name.complete) return null;
-    final paths = {
+    return _routeTemplate([
       for (final route in routes)
-        if (route.name == name.text && route.path != null) route.path!,
-    };
-    if (paths.length != 1) return null;
-    final segments = paths.single.split('/');
+        if (route.name == name.text) route.path,
+    ]);
+  }
+
+  /// The one path [paths] agree on, with its `:param` segments unknown.
+  Evaluation? _routeTemplate(Iterable<String?> paths) {
+    final unique = paths.whereType<String>().toSet();
+    if (unique.length != 1) return null;
+    final segments = unique.single.split('/');
     return _concat([
       for (final (i, segment) in segments.indexed) ...[
         if (i > 0) Evaluation('/', true),
@@ -552,4 +678,21 @@ extension _Values on CodeIndex {
     final (file, initializer, className) = candidates.single;
     return _evaluate(initializer, _Env.constant(file, className), depth + 1);
   }
+}
+
+/// The initializer of a final local named [e] in an enclosing block, for code
+/// outside any named declaration, such as a closure in a top-level provider.
+Expression? _localInitializer(SimpleIdentifier e) {
+  for (AstNode? node = e.parent; node != null; node = node.parent) {
+    if (node is! Block) continue;
+    for (final statement
+        in node.statements.whereType<VariableDeclarationStatement>()) {
+      final variables = statement.variables;
+      if (!variables.isFinal && !variables.isConst) continue;
+      for (final variable in variables.variables) {
+        if (variable.name.lexeme == e.name) return variable.initializer;
+      }
+    }
+  }
+  return null;
 }

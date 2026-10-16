@@ -7,7 +7,7 @@ extension _Routes on CodeIndex {
   /// relative path and no enclosing route there, is registered at each call
   /// of that function or getter instead, where its arguments and parent are.
   void _registerRoutes() {
-    final routeClasses = {'GoRoute'};
+    final routeClasses = {'GoRoute', 'TypedGoRoute'};
     for (var grew = true; grew;) {
       grew = false;
       for (final MapEntry(:key, :value) in _superclasses.entries) {
@@ -29,6 +29,19 @@ extension _Routes on CodeIndex {
       return false;
     }
 
+    void add(_Creation creation, SourceFile file, AstNode at, _Env env) {
+      final (path, name) =
+          _routeArguments(creation.className, creation.arguments, env, 0);
+      final pathValue = path == null ? null : _evaluate(path.$1, path.$2);
+      final nameValue = name == null ? null : _evaluate(name.$1, name.$2);
+      final named = nameValue != null && !nameValue.isNull;
+      routes.add(RouteDecl(file, at, creation.node, path?.$1,
+          named ? name?.$1 : null, pathValue, named ? nameValue : null)
+        ..typedClass = creation.className == 'TypedGoRoute'
+            ? creation.typeArgument
+            : null);
+    }
+
     // [calls] reach the creation through functions or getters, innermost first.
     void register(_Creation creation, List<Ref> calls) {
       var env = _Env(calls.isEmpty ? creation.owner : calls.last.owner,
@@ -37,7 +50,19 @@ extension _Routes on CodeIndex {
         env = _call(calls[i].arguments,
             i == 0 ? creation.owner! : calls[i - 1].owner!, env);
       }
-      final (path, name) =
+      // A route built in a collection `for` over a list literal is one route
+      // per element, registered at that element.
+      if (calls.isEmpty) {
+        if (_loopElements(creation.node, creation.owner, env)
+            case final elements?) {
+          for (final (bound, element) in elements) {
+            add(creation, creation.file, element,
+                _Env(env.owner, env.file, bound));
+          }
+          return;
+        }
+      }
+      final (path, _) =
           _routeArguments(creation.className, creation.arguments, env, 0);
       final pathValue = path == null ? null : _evaluate(path.$1, path.$2);
       final at = calls.isEmpty ? creation.node : calls.last.node;
@@ -57,16 +82,7 @@ extension _Routes on CodeIndex {
           return;
         }
       }
-      final nameValue = name == null ? null : _evaluate(name.$1, name.$2);
-      final named = nameValue != null && !nameValue.isNull;
-      routes.add(RouteDecl(
-          calls.isEmpty ? creation.file : calls.last.file,
-          at,
-          creation.node,
-          path?.$1,
-          named ? name?.$1 : null,
-          pathValue,
-          named ? nameValue : null));
+      add(creation, calls.isEmpty ? creation.file : calls.last.file, at, env);
     }
 
     for (final creation in creations) {
@@ -121,6 +137,7 @@ extension _Routes on CodeIndex {
       for (final (i, (path, complete, parent)) in full(route, 0).indexed) {
         final copy = i == 0 ? route : RouteDecl._copy(route);
         copy.parent = parent;
+        copy.typedClass = route.typedClass;
         copy.path = complete ? path : null;
         copy.pathPrefix = complete ? null : path;
         if (route._nameValue case final name? when name.complete) {
@@ -139,7 +156,48 @@ extension _Routes on CodeIndex {
       }
       route.tree = _tree(top.node);
     }
-    _registerShells(byAt, byOrigin);
+    _registerShells();
+  }
+
+  /// One binding of the loop variable per element when [node] sits in a
+  /// collection `for` over a list literal: `for (final item in items)` or
+  /// `for (final (i, item) in items.indexed)`.
+  List<(Map<String, (Expression, _Env)>, AstNode)>? _loopElements(
+      AstNode node, Decl? owner, _Env env) {
+    for (var up = node.parent;
+        up != null && !identical(up, owner?.node);
+        up = up.parent) {
+      if (up is! ForElement) continue;
+      final parts = up.forLoopParts;
+      final (String? name, Expression? iterable) = switch (parts) {
+        ForEachPartsWithDeclaration p => (
+            p.loopVariable.name.lexeme,
+            p.iterable
+          ),
+        // Only `items.indexed` yields `(index, item)` records.
+        ForEachPartsWithPattern(
+          pattern: RecordPattern(fields: [_, final item]),
+          iterable: PrefixedIdentifier(:final prefix, :final identifier)
+        )
+            when identifier.name == 'indexed' =>
+          (_variable(item.pattern), prefix),
+        ForEachPartsWithPattern(
+          pattern: RecordPattern(fields: [_, final item]),
+          iterable: PropertyAccess(:final realTarget, :final propertyName)
+        )
+            when propertyName.name == 'indexed' =>
+          (_variable(item.pattern), realTarget),
+        _ => (null, null),
+      };
+      final list = iterable == null ? null : _listOf(iterable, env);
+      if (name == null || list == null) return null;
+      final (literal, listEnv) = list;
+      return [
+        for (final element in literal.elements.whereType<Expression>())
+          ({...env.arguments, name: (element, listEnv)}, element),
+      ];
+    }
+    return null;
   }
 
   /// The `GoRouter` or `RoutingConfig` call holding a top-level route, or else
@@ -159,26 +217,37 @@ extension _Routes on CodeIndex {
     return declaration;
   }
 
-  /// The first route of each branch of each `StatefulShellRoute`, for
+  /// The first route of each branch of each shell route, for
   /// `goBranch(index)`.
-  void _registerShells(Map<AstNode, List<RouteDecl>> byAt,
-      Map<AstNode, List<RouteDecl>> byOrigin) {
+  void _registerShells() {
     for (final (file, _, branches) in _shellArguments) {
       shells.add([
-        for (final element in branches.elements)
-          [
-            for (final route in routes)
-              if (route.file == file &&
-                  route.node.offset >= element.offset &&
-                  route.node.end <= element.end &&
-                  !(route.parent != null &&
-                      route.parent!.file == file &&
-                      route.parent!.node.offset >= element.offset &&
-                      route.parent!.node.end <= element.end))
-                route,
-          ].firstOrNull,
+        for (final element in branches.elements) _branchRoute(file, element),
       ]);
     }
+  }
+
+  /// A branch's top route. Its routes may sit in a constant it names, as in
+  /// `TypedStatefulShellBranch(routes: HomeRoute.routes)`.
+  RouteDecl? _branchRoute(SourceFile file, AstNode element) {
+    final ranges = [(file, element.offset, element.end)];
+    final listed = switch (element) {
+      MethodInvocation m => _named(m.argumentList, 'routes'),
+      InstanceCreationExpression c => _named(c.argumentList, 'routes'),
+      _ => null,
+    };
+    if (listed is Identifier) {
+      if (_consts[listed.toSource()]?.singleOrNull case (final f, final e, _)) {
+        ranges.add((f, e.offset, e.end));
+      }
+    }
+    bool inside(RouteDecl? route) =>
+        route != null &&
+        ranges.any((r) =>
+            route.file == r.$1 &&
+            route.node.offset >= r.$2 &&
+            route.node.end <= r.$3);
+    return routes.where((r) => inside(r) && !inside(r.parent)).firstOrNull;
   }
 
   /// The `path` and `name` arguments a route constructor call passes on to
@@ -189,7 +258,9 @@ extension _Routes on CodeIndex {
           final expression? => (expression, env),
           null => null,
         };
-    if (className == 'GoRoute') return (named('path'), named('name'));
+    if (className == 'GoRoute' || className == 'TypedGoRoute') {
+      return (named('path'), named('name'));
+    }
     final superclass = _superclasses[className];
     final constructor = _constructor(className);
     if (superclass == null || constructor == null || depth > 4) {
@@ -256,3 +327,8 @@ bool _fits(List<String> wanted, List<String> have) {
   }
   return true;
 }
+
+String? _variable(DartPattern pattern) => switch (pattern) {
+      DeclaredVariablePattern p => p.name.lexeme,
+      _ => null,
+    };

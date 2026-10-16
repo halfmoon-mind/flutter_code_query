@@ -88,7 +88,9 @@ flutter_code_query check
 - `destination.value` shows unknown parts as `{expression}`. `templated`
   marks a value with unknown parts that matched a `:param` route.
   `alternative` marks one of several values the call can produce, such as a
-  branch of `cond ? '/a' : '/b'`. A `goBranch` call has `branch` instead.
+  branch of `cond ? '/a' : '/b'` or an element of `items[index].path`. A
+  `goBranch` call has `branch` instead, and a go_router_builder call such as
+  `const HomeRoute().go(context)` has `routeClass`.
 - `conditions` are source expressions that must hold. In a callback chain,
   `at_creation` conditions decide whether the callback is bound and `on_event`
   ones are checked when it fires. Chains whose literal arguments contradict a
@@ -129,12 +131,16 @@ candidate list can be incomplete.
 ## What it indexes
 
 - **Registrations**: `GoRoute(...)` (also import-prefixed), project subclasses
-  of `GoRoute` including `super.path` parameters, and routes built by
-  functions or getters, registered where they are called. Nested relative
+  of `GoRoute` including `super.path` parameters, routes built by functions or
+  getters (registered where they are called), routes built in a collection
+  `for` over a list of config objects (one per element), and go_router_builder
+  `@TypedGoRoute<T>` / `TypedGoRoute<T>(...)` declarations. Nested relative
   paths are joined with every parent they are used under. The branches of a
-  `StatefulShellRoute` are kept for `goBranch`.
+  `StatefulShellRoute` or `TypedStatefulShellRoute` are kept for `goBranch`.
 - **Navigation**: `go`/`push`/`pushReplacement`/`replace`, their `*Named`
-  forms, and `goBranch`. The receiver ends in `context` or contains `router`,
+  forms, `goBranch`, and the same calls on a go_router_builder route object
+  (`const HomeRoute().go(context)`). The receiver ends in `context` or
+  contains `router`,
   or is a parameter, local or field declared as or initialized from a
   `BuildContext` or `GoRouter`, or the first parameter of a `*builder`
   closure. Bare calls inside an extension on those types count too.
@@ -150,9 +156,10 @@ candidate list can be incomplete.
 - **Values**: string literals and interpolation, constants and static fields
   (preferring the imported declaration), getters and functions by their
   return values, enum `.name` and constructor fields, forwarded parameters with
-  defaults, widget fields set by a constructor call, conditional and switch
-  expressions, `??` and null tests, `Uri(path: ...).toString()`,
-  `namedLocation(name)`, and record fields of a Riverpod `Provider` default.
+  defaults, widget and object fields set by a constructor call, list elements
+  by index (`items[index].path`), conditional and switch expressions, `??` and
+  null tests, `Uri(path: ...).toString()`, `namedLocation(name)`,
+  `TypedRoute().location`, and record fields of a Riverpod `Provider` default.
 - **Conditions**: if/else, conditional and switch branches (including earlier
   cases that must not match), `&&`/`||`/`??` operands, loops and collection
   `for`, and early-exit guards, including else-if chains and `continue`.
@@ -187,8 +194,8 @@ Files whose header says `GENERATED ... DO NOT MODIFY`, `*.g.dart` and
   `truncatedSites`.
 - Symbolic links under `lib/` are not followed; `check` counts them in
   `stats.skippedLinks`.
-- Not supported yet: go_router_builder typed routes, Navigator 1.0,
-  auto_route, `Link` widgets, and API data flow.
+- Not supported yet: Navigator 1.0, auto_route, `Link` widgets, and API data
+  flow.
 
 ## Versions
 

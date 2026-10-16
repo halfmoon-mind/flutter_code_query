@@ -1,5 +1,8 @@
 part of 'index.dart';
 
+/// Shell routes whose `branches` `goBranch` switches between.
+const _shells = {'StatefulShellRoute', 'TypedStatefulShellRoute'};
+
 class _Collector extends RecursiveAstVisitor<void> {
   _Collector(this.index, this.file);
 
@@ -127,10 +130,11 @@ class _Collector extends RecursiveAstVisitor<void> {
     if (_upper.hasMatch(name) &&
         (target == null ||
             (target is SimpleIdentifier && !_upper.hasMatch(target.name)))) {
-      _creation(node, name, node.argumentList);
+      _creation(node, name, node.argumentList,
+          node.typeArguments?.arguments.singleOrNull?.toSource());
     }
-    if ((name == 'StatefulShellRoute' && target == null) ||
-        (target is SimpleIdentifier && target.name == 'StatefulShellRoute')) {
+    if ((_shells.contains(name) && target == null) ||
+        (target is SimpleIdentifier && _shells.contains(target.name))) {
       _shell(node, node.argumentList);
     }
     final positional =
@@ -151,12 +155,27 @@ class _Collector extends RecursiveAstVisitor<void> {
 
   @override
   void visitInstanceCreationExpression(InstanceCreationExpression node) {
-    final type = _typeName(node.constructorName.type.toSource());
+    final source = node.constructorName.type.toSource();
+    final type = _typeName(source);
     if (node.constructorName.name == null) {
-      _creation(node, type, node.argumentList);
+      _creation(node, type, node.argumentList,
+          RegExp(r'<\s*([\w.]+)').firstMatch(source)?.group(1));
     }
-    if (type == 'StatefulShellRoute') _shell(node, node.argumentList);
+    if (_shells.contains(type)) _shell(node, node.argumentList);
     super.visitInstanceCreationExpression(node);
+  }
+
+  /// go_router_builder registrations: `@TypedGoRoute<HomeRoute>(path: '/')`.
+  @override
+  void visitAnnotation(Annotation node) {
+    final type = _typeName(node.name.toSource());
+    final arguments = node.arguments;
+    if (arguments != null && type.startsWith('Typed')) {
+      _creation(node, type, arguments,
+          node.typeArguments?.arguments.singleOrNull?.toSource());
+      if (_shells.contains(type)) _shell(node, arguments);
+    }
+    super.visitAnnotation(node);
   }
 
   @override
@@ -203,9 +222,15 @@ class _Collector extends RecursiveAstVisitor<void> {
     super.visitSimpleIdentifier(node);
   }
 
-  void _creation(AstNode node, String className, ArgumentList arguments) =>
-      (index._creations[className] ??= [])
-          .add(_Creation(file, node, className, arguments, _decl));
+  void _creation(AstNode node, String className, ArgumentList arguments,
+      [String? typeArgument]) {
+    final type = typeArgument == null ? null : _typeName(typeArgument);
+    (index._creations[className] ??= [])
+        .add(_Creation(file, node, className, arguments, _decl, type));
+    if (className == 'TypedGoRoute' && type != null) {
+      index._typedClasses.add(type);
+    }
+  }
 
   void _shell(AstNode node, ArgumentList arguments) {
     if (_named(arguments, 'branches') case final ListLiteral branches) {

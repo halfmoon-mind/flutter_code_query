@@ -68,21 +68,27 @@ class Ref {
 }
 
 class NavigationSite {
-  NavigationSite(this.file, this.node, this.owner, this.className, this.kind);
+  NavigationSite(this.file, this.node, this.owner, this.className, this.kind,
+      {this.typedClass});
 
   final SourceFile file;
   final MethodInvocation node;
   final Decl? owner;
   final String? className;
 
-  /// `location` (`go`, `push`...), `name` (`goNamed`...) or `branch`
-  /// (`goBranch`).
+  /// `location` (`go`, `push`...), `name` (`goNamed`...), `branch`
+  /// (`goBranch`) or `typed` (`const HomeRoute().go(context)`).
   final String kind;
+
+  /// The go_router_builder route class a `typed` call navigates to.
+  final String? typedClass;
 
   bool get named => kind == 'name';
 
-  Expression get destination =>
-      node.argumentList.arguments.firstWhere((a) => a is! NamedExpression);
+  /// The location or name argument; the route object for a `typed` call.
+  Expression get destination => kind == 'typed'
+      ? node.realTarget!
+      : node.argumentList.arguments.firstWhere((a) => a is! NamedExpression);
 }
 
 class RouteDecl {
@@ -106,6 +112,9 @@ class RouteDecl {
   final Evaluation? _pathValue;
   final Evaluation? _nameValue;
   RouteDecl? parent;
+
+  /// The go_router_builder class of a `TypedGoRoute<T>` registration.
+  String? typedClass;
 
   /// The router configuration the route belongs to.
   AstNode? tree;
@@ -297,11 +306,15 @@ class _Env {
 
 /// A constructor call; the ones of route classes become registrations.
 class _Creation {
-  _Creation(this.file, this.node, this.className, this.arguments, this.owner);
+  _Creation(this.file, this.node, this.className, this.arguments, this.owner,
+      [this.typeArgument]);
 
   final SourceFile file;
   final AstNode node;
   final String className;
   final ArgumentList arguments;
   final Decl? owner;
+
+  /// `T` in `TypedGoRoute<T>(...)`.
+  final String? typeArgument;
 }
