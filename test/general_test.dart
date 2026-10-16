@@ -88,7 +88,8 @@ void main() {
         isFalse);
     final help = candidates(index, '/help').single;
     expect(symbols(help), ['Screens.build', 'Nav.openHelp']);
-    expect((help['hops'] as List).first, containsPair('nameMatches', 1));
+    // `context.openHelp` resolves to the BuildContext extension by type.
+    expect((help['hops'] as List).first, isNot(contains('nameMatches')));
     expect(candidates(index, '/home').single['destination'],
         {'expression': 'AppRoute.home.name', 'value': 'home'});
   });

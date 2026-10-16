@@ -18,7 +18,7 @@ const _limits = [
 /// with one destination value or `goBranch` index.
 class _Path {
   _Path(this.chain, this.build, this.destination, this.branch,
-      {this.alternative = false});
+      {this.alternative = false, this.selectedBy});
 
   final Chain chain;
   final Chain? build;
@@ -29,6 +29,10 @@ class _Path {
 
   /// Whether [destination] is one of several values the call can produce.
   final bool alternative;
+
+  /// The branch condition that picks [destination], for `c ? a : b` or a
+  /// switch expression written in the call.
+  final Map<String, Object?>? selectedBy;
 }
 
 class _Site {
@@ -46,15 +50,23 @@ List<_Site> _sites(CodeIndex index) {
     final paths = <_Path>[];
     for (final chain in chains) {
       final plain = index.destination(site, chain);
-      // Widget constructor calls matter only when the destination needs them.
-      final builds = index.buildPaths(chain,
+      Chain whole(Chain? build) => build == null
+          ? chain
+          : Chain([...build.hops, ...chain.hops], chain.rootKind, chain.slot,
+              chain.slotNode);
+      // Widget constructor calls matter only when they change the destination.
+      var builds = index.buildPaths(chain,
           widgets:
               site.kind != 'branch' && site.kind != 'typed' && !plain.complete);
+      if (builds.isNotEmpty && builds.first.hops.last.ref?.creation == true) {
+        builds = [
+          for (final build in builds)
+            if (_shape(index.destination(site, whole(build))) != _shape(plain))
+              build,
+        ];
+      }
       for (final build in builds.isEmpty ? const <Chain?>[null] : builds) {
-        final full = build == null
-            ? chain
-            : Chain([...build.hops, ...chain.hops], chain.rootKind, chain.slot,
-                chain.slotNode);
+        final full = whole(build);
         if (!index.feasible(full)) continue;
         if (site.kind == 'branch') {
           paths.add(_Path(chain, build, null, index.branchIndex(site, full)));
@@ -66,6 +78,19 @@ List<_Site> _sites(CodeIndex index) {
         }
         final destination =
             build == null ? plain : index.destination(site, full);
+        // `c ? '/a' : '/b'` written in the call: each branch with the
+        // condition that picks it.
+        final choices =
+            destination.alternatives == null ? null : _choices(site, chain);
+        if (choices != null) {
+          for (final (branch, selectedBy) in choices) {
+            for (final value in index.evaluateAt(branch, full).expand()) {
+              paths.add(_Path(chain, build, value, null,
+                  alternative: true, selectedBy: selectedBy));
+            }
+          }
+          continue;
+        }
         for (final value in destination.expand()) {
           paths.add(_Path(chain, build, value, null,
               alternative: destination.alternatives != null));
@@ -121,6 +146,49 @@ List<_Site> _sites(CodeIndex index) {
     return (index.routesForPattern(pattern), true);
   }
   return (const [], false);
+}
+
+/// What a destination is known to be, alternatives included.
+String _shape(Evaluation e) => [
+      for (final value in e.expand()) '${value.complete}${value.pattern}',
+    ].join('|');
+
+/// The branches of a conditional or switch expression written as the
+/// destination, each with the condition that picks it.
+List<(Expression, Map<String, Object?>)>? _choices(
+    NavigationSite site, Chain chain) {
+  var expression = site.destination;
+  while (expression is ParenthesizedExpression) {
+    expression = expression.expression;
+  }
+  final phase =
+      chain.rootKind == 'callback' || chain.rootKind == 'callback_factory'
+          ? 'on_event'
+          : null;
+  Map<String, Object?> condition(
+          AstNode at, String kind, String expression, Object value) =>
+      {
+        'at': site.file.at(at),
+        'kind': kind,
+        'expression': expression,
+        'is': value,
+        if (phase != null) 'phase': phase,
+      };
+  return switch (expression) {
+    ConditionalExpression e => [
+        (e.thenExpression, condition(e, 'if', '${e.condition}', true)),
+        (e.elseExpression, condition(e, 'if', '${e.condition}', false)),
+      ],
+    SwitchExpression e => [
+        for (final c in e.cases)
+          (
+            c.expression,
+            condition(
+                c, 'switch', '${e.expression}', 'case ${c.guardedPattern}')
+          ),
+      ],
+    _ => null,
+  };
 }
 
 Map<String, Object?> routeList(CodeIndex index) => {
@@ -230,9 +298,22 @@ Map<String, Object?> check(CodeIndex index) {
       if (references.isNotEmpty) 'referencedAt': references.take(5).toList(),
     });
   }
+  final byFullPath = <String, List<RouteDecl>>{};
   for (final MapEntry(key: (path, _), value: routes) in byPath.entries) {
-    // Copies of one registration under several parents are not duplicates.
-    final registrations = {for (final r in routes) r.node: r}.values.toList();
+    (byFullPath[path] ??= []).addAll(routes);
+  }
+  for (final MapEntry(key: path, value: routes) in byFullPath.entries) {
+    // Copies of one registration under several parents are not duplicates,
+    // and two router configurations never conflict. A route outside any
+    // GoRouter or RoutingConfig call can end up in either.
+    final unique = {for (final r in routes) r.node: r}.values.toList();
+    final registrations = [
+      for (final r in unique)
+        if (unique.any((o) =>
+            !identical(o, r) &&
+            (o.tree == null || r.tree == null || identical(o.tree, r.tree))))
+          r,
+    ];
     if (registrations.length > 1) {
       findings.add({
         'check': 'duplicate_route',
@@ -411,12 +492,16 @@ Map<String, Object?> _candidate(
           ...index.conditionsAt(hop, phase: 'at_creation'),
       for (final (i, hop) in chain.hops.indexed)
         ...switch ((i, chain.rootKind)) {
-          (0, _) => index.conditionsAt(hop, root: true),
+          (0, 'callback' || 'callback_factory') =>
+            index.conditionsAt(hop, root: true),
           (1, 'callback_factory') => index.conditionsAt(hop, factory: true),
           (_, 'callback' || 'callback_factory') =>
             index.conditionsAt(hop, phase: 'on_event'),
-          _ => index.conditionsAt(hop),
+          // A listener or other closure: outside it at creation, inside when
+          // it runs.
+          _ => index.conditionsAt(hop, factory: index.deferred(hop)),
         },
+      if (path.selectedBy case final selected?) selected,
     ],
   };
 }
@@ -438,24 +523,26 @@ String _code(AstNode node) => switch (node) {
 /// Lines outside the registration that mention the route: its full path or
 /// name as a string literal, or the constant its path is written with.
 List<String> _references(CodeIndex index, RouteDecl route) {
-  final expression = route.pathExpression;
+  final constant = index.pathConstant(route);
   final needles = [
     if (route.path case final path?) ...["'$path'", '"$path"'],
     if (route.name case final name?) ...["'$name'", '"$name"'],
-    if (expression is PrefixedIdentifier || expression is PropertyAccess)
-      '$expression',
+    if (constant != null) constant.$1,
   ];
-  if (needles.isEmpty) return const [];
+  final typed = index.typedUses(route);
+  if (needles.isEmpty) return typed;
   final pattern =
       RegExp('(${needles.map(RegExp.escape).join('|')})(?![\\w\$])');
-  return [
+  // One per line; the line declaring the path constant is its definition.
+  return {
+    ...typed,
     for (final file in index.files)
       for (final match in pattern.allMatches(file.content))
         if (file != route.file ||
             match.start < route.node.offset ||
             match.start >= route.node.end)
           '${file.path}:${file.lineInfo.getLocation(match.start).lineNumber}',
-  ];
+  }.where((at) => at != constant?.$2).toList();
 }
 
 List<Map<String, Object?>> _suggest(CodeIndex index, String path) {

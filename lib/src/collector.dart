@@ -11,6 +11,7 @@ class _Collector extends RecursiveAstVisitor<void> {
   String? _class;
   Decl? _decl;
   bool _extendsRouter = false;
+  final _enumPositions = <String, int>{};
 
   void _inClass(String name, void Function() visit) {
     index._classes.add(name);
@@ -66,11 +67,21 @@ class _Collector extends RecursiveAstVisitor<void> {
   @override
   void visitExtensionDeclaration(ExtensionDeclaration node) {
     final saved = _extendsRouter;
+    final on = node.onClause?.extendedType.toSource();
     // In `extension on BuildContext`, a bare `go(...)` navigates `this`.
-    _extendsRouter = _isRouterType(node.onClause?.extendedType.toSource());
-    _inClass(node.name?.lexeme ?? '<extension>',
-        () => super.visitExtensionDeclaration(node));
+    _extendsRouter = _isRouterType(on);
+    final name = node.name?.lexeme ?? '<extension on $on>';
+    if (on != null) index._extensionOn[name] = _typeName(on);
+    _inClass(name, () => super.visitExtensionDeclaration(node));
     _extendsRouter = saved;
+  }
+
+  @override
+  void visitImportDirective(ImportDirective node) {
+    if (node.prefix case final prefix?) {
+      (index._prefixes[file.library] ??= {}).add(prefix.name);
+    }
+    super.visitImportDirective(node);
   }
 
   @override
@@ -103,9 +114,15 @@ class _Collector extends RecursiveAstVisitor<void> {
               .add((file, initializer, _class));
         }
       }
-    } else if (_isRouterType(node.fields.type?.toSource())) {
+    } else {
+      // A field typed as, or initialized from, a BuildContext or GoRouter.
       for (final variable in node.fields.variables) {
-        index._routerFields.add(variable.name.lexeme);
+        final value = variable.initializer?.toSource() ?? '';
+        if (_isRouterType(node.fields.type?.toSource()) ||
+            value.contains('GoRouter') ||
+            value.replaceAll(RegExp('[!?]'), '').endsWith('context')) {
+          index._routerFields.add(variable.name.lexeme);
+        }
       }
     }
     super.visitFieldDeclaration(node);
@@ -180,7 +197,10 @@ class _Collector extends RecursiveAstVisitor<void> {
 
   @override
   void visitEnumConstantDeclaration(EnumConstantDeclaration node) {
-    index._enumConstants['$_class.${node.name.lexeme}'] = (file, node);
+    final position =
+        _enumPositions.update(_class!, (i) => i + 1, ifAbsent: () => 0);
+    index._enumConstants['$_class.${node.name.lexeme}'] =
+        (file, node, position);
     super.visitEnumConstantDeclaration(node);
   }
 

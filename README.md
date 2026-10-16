@@ -79,24 +79,30 @@ flutter_code_query check
   - `no_callers`: nothing in the project references the declaration.
   - `cycle`, `depth_limit` (12 hops) or `no_owner`: the walk stopped there.
 - `builtBy` is the call path that builds the widget binding a callback root:
-  the calls of a helper that returns it, or, when the destination needs it,
-  the constructor calls of a widget whose field holds the location. Arguments
-  and fields are bound through it.
+  the calls of a helper that returns it, or the constructor calls of a widget
+  when its fields change the destination. Arguments and fields are bound
+  through it.
 - `hops` run from the root to the navigation call. A hop with `nameMatches`
   was linked by its name alone. A hop with `deferred` only creates a closure
   or passes a tear-off (a builder, listener or returned callback).
 - `destination.value` shows unknown parts as `{expression}`. `templated`
-  marks a value with unknown parts that matched a `:param` route.
+  marks a value with unknown parts that matched the route's shape, such as
+  `/items/{id}` for `/items/:id`.
   `alternative` marks one of several values the call can produce, such as a
   branch of `cond ? '/a' : '/b'` or an element of `items[index].path`. A
   `goBranch` call has `branch` instead, and a go_router_builder call such as
   `const HomeRoute().go(context)` has `routeClass`.
-- `conditions` are source expressions that must hold. In a callback chain,
-  `at_creation` conditions decide whether the callback is bound and `on_event`
-  ones are checked when it fires. Chains whose literal arguments contradict a
-  condition, such as `open(context, false)` into `if (replace)`, are dropped.
-- `prefixMatches`, `dynamicSites`, `truncatedSites` and `parseErrors` appear
-  only when some navigation could reach the route without being a candidate.
+- `conditions` are source expressions that must hold. `at_creation`
+  conditions decide whether a callback or listener is set up, and `on_event`
+  ones are checked when it fires; conditions without a `phase` hold whenever
+  the root declaration runs. The condition picking an `alternative`, such as
+  `cond` in `cond ? '/a' : '/b'`, is listed too. Chains whose literal arguments
+  contradict a condition, such as `open(context, false)` into `if (replace)`,
+  are dropped.
+- `prefixMatches` and `dynamicSites` list navigation calls that could reach
+  the route without being candidates. `truncatedSites` and `parseErrors` list
+  places where candidates for any route can be missing. Each appears only when
+  it is not empty.
 
 ## Agent instructions
 
@@ -131,32 +137,38 @@ candidate list can be incomplete.
 ## What it indexes
 
 - **Registrations**: `GoRoute(...)` (also import-prefixed), project subclasses
-  of `GoRoute` including `super.path` parameters, routes built by functions or
-  getters (registered where they are called), routes built in a collection
+  of `GoRoute` including `super.path` parameters, routes built in a collection
   `for` over a list of config objects (one per element), and go_router_builder
-  `@TypedGoRoute<T>` / `TypedGoRoute<T>(...)` declarations. Nested relative
-  paths are joined with every parent they are used under. The branches of a
-  `StatefulShellRoute` or `TypedStatefulShellRoute` are kept for `goBranch`.
+  `@TypedGoRoute<T>` / `TypedGoRoute<T>(...)` declarations. A route that a
+  function or getter builds from its parameters or with a relative path is
+  registered where that function is called, and a route in a list variable
+  where the variable is used, so a shared child list is joined with every
+  parent it is used under. The branches of a `StatefulShellRoute` or
+  `TypedStatefulShellRoute` are kept for `goBranch`.
 - **Navigation**: `go`/`push`/`pushReplacement`/`replace`, their `*Named`
   forms, `goBranch`, and the same calls on a go_router_builder route object
   (`const HomeRoute().go(context)`). The receiver ends in `context` or
-  contains `router`,
-  or is a parameter, local or field declared as or initialized from a
-  `BuildContext` or `GoRouter`, or the first parameter of a `*builder`
-  closure. Bare calls inside an extension on those types count too.
+  contains `router`, or is a parameter, local or field declared as or
+  initialized from a `BuildContext` or `GoRouter`, or the first parameter of a
+  `*builder` closure. Bare and `this.` calls inside an extension on those
+  types count too.
 - **Chains**: from each navigation call up to an `on*` callback slot, one
   chain per call site. Callbacks may be tear-offs (`onTap: c.open`), closures
   in conditional, switch or `??` expressions, callback factories, or
   callbacks passed to a parameter named `on*`. Calls resolve through local
   functions, the enclosing class, project superclasses, mixins and subclass
-  overrides, `part` files, and receivers whose type is written in the source
-  (`C.m()`, `C().m()`, `getIt<C>().m()`). go_router's own methods and classes
-  outside the project, such as `Navigator`, are never linked to project
-  declarations.
+  overrides, `part` files, import prefixes, and receivers whose type is
+  written in the source (`C.m()`, `C().m()`, `getIt<C>().m()`). On a
+  `BuildContext`, a `GoRouter` or a class outside the project, such as
+  `Navigator.of(context)`, a call links only to project extension members on
+  that type, so go_router's own `context.pop()` never reaches a project
+  method named `pop`.
 - **Values**: string literals and interpolation, constants and static fields
   (preferring the imported declaration), getters and functions by their
-  return values, enum `.name` and constructor fields, forwarded parameters with
-  defaults, widget and object fields set by a constructor call, list elements
+  return values, enum `.name`, `.index` and constructor fields, dot
+  shorthands (`.settings`) when one project enum has that constant, forwarded
+  parameters with defaults, widget and object fields set by a constructor
+  call, list elements
   by index (`items[index].path`), conditional and switch expressions, `??` and
   null tests, `Uri(path: ...).toString()`, `namedLocation(name)`,
   `TypedRoute().location`, and record fields of a Riverpod `Provider` default.
@@ -164,22 +176,23 @@ candidate list can be incomplete.
   cases that must not match), `&&`/`||`/`??` operands, loops and collection
   `for`, and early-exit guards, including else-if chains and `continue`.
 
-Files whose header says `GENERATED ... DO NOT MODIFY`, `*.g.dart` and
+Files whose first lines say `GENERATED ... DO NOT MODIFY`, `*.g.dart` and
 `*.freezed.dart` are skipped.
 
 ## Checks
 
 | Check | Severity | Meaning |
 | --- | --- | --- |
-| `unknown_destination` | warning | A resolved location or name matches no registered route. It is `info` when some route paths or names could not be evaluated. |
-| `duplicate_route` | warning | The same full path is registered twice in one router configuration (`GoRouter` or `RoutingConfig`). |
+| `unknown_destination` | warning | A resolved location or name matches no registered route. It is `info` when a route whose path or name could not be fully evaluated might match it. |
+| `duplicate_route` | warning | The same full path is registered twice in one router configuration (`GoRouter` or `RoutingConfig`). Routes outside any such call are compared with all others. |
 | `parse_error` | warning | A file or directory was only partly read, so its routes and calls can be missing. |
 | `unresolved_destination` | info | The destination could not be evaluated statically, or is relative. |
 | `uncalled_navigation` | info | Every chain ends in a declaration nothing references. |
-| `route_without_navigation` | info | No navigation call resolves to the route. `otherReferences` counts mentions of its full path or name as a string literal, or of the constant its path is written with. |
+| `route_without_navigation` | info | No navigation call resolves to the route. `otherReferences` counts lines that mention its full path or name as a string literal, the constant its path is written with, or its go_router_builder class's constructor, such as in a redirect. |
 | `unresolved_route_path` | info | A route path could not be evaluated; `knownPrefix` gives its start. |
 
-`check` always exits 0; read the `severity` of each finding.
+`check` exits 0 whenever it runs, whatever it finds; read the `severity` of
+each finding. A usage error or a missing `lib/` exits 2.
 
 ## Limits
 
@@ -190,6 +203,10 @@ Files whose header says `GENERATED ... DO NOT MODIFY`, `*.g.dart` and
 - Conditions are source expressions, never evaluated values. Static and
   top-level variables are read from their initializers.
 - Redirects, deep links and fully dynamic destinations are not candidates.
+- An `on*` argument of any constructor counts as the callback slot, including
+  a config object (`MenuItem(onTap: ...)`) a widget binds later.
+- go_router_builder routes are all registered, even a library's top-level
+  `@TypedGoRoute` that no `GoRouter` includes.
 - A navigation site keeps at most 200 chains; sites past that appear under
   `truncatedSites`.
 - Symbolic links under `lib/` are not followed; `check` counts them in

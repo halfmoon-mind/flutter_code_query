@@ -150,7 +150,12 @@ extension _Values on CodeIndex {
         }
       }
     }
-    return switch (_consts[e.toSource()]?.singleOrNull) {
+    // An unqualified static field of the class the code is in, or a constant.
+    final key = e is SimpleIdentifier &&
+            _consts.containsKey('${env.className}.${e.name}')
+        ? '${env.className}.${e.name}'
+        : e.toSource();
+    return switch (_consts[key]?.singleOrNull) {
       (final file, final ListLiteral list, final className) => (
           list,
           _Env.constant(file, className)
@@ -225,8 +230,9 @@ extension _Values on CodeIndex {
       String enumName, String value, String field, int depth) {
     final entry = _enumConstants['$enumName.$value'];
     if (entry == null) return null;
+    final (file, constant, position) = entry;
     if (field == 'name') return Evaluation(value, true);
-    final (file, constant) = entry;
+    if (field == 'index') return Evaluation('$position', true);
     final constructor = (_decls[enumName] ?? const <Decl>[])
         .where((d) =>
             d.className == enumName &&
@@ -245,6 +251,20 @@ extension _Values on CodeIndex {
   /// widget fields and final locals: `('Kind', 'a')` for `Kind.a`.
   (String, String)? _enumValue(Expression e, _Env env, int depth) {
     if (depth > 8) return null;
+    // A dot shorthand (`.settings`) names a constant of the expected enum;
+    // it resolves when exactly one project enum has that constant.
+    if (RegExp(r'^\.(\w+)$').firstMatch(e.toSource()) case final shorthand?) {
+      final matches = [
+        for (final key in _enumConstants.keys)
+          if (key.endsWith('.${shorthand.group(1)}')) key,
+      ];
+      if (matches.length != 1) return null;
+      final dot = matches.single.lastIndexOf('.');
+      return (
+        matches.single.substring(0, dot),
+        matches.single.substring(dot + 1),
+      );
+    }
     switch (e) {
       case PrefixedIdentifier()
           when _enumConstants
@@ -428,6 +448,10 @@ extension _Values on CodeIndex {
             case (final value, final caller)) {
           return _evaluate(value, caller, depth + 1).asForwarded;
         }
+        // `prefix.kHome` through an import prefix names a top-level constant.
+        if (_prefixes[env.file.library]?.contains(e.prefix.name) ?? false) {
+          return _constant(e.identifier.name, env.file, depth);
+        }
         final key = '${e.prefix.name}.${e.identifier.name}';
         if (!_consts.containsKey(key)) {
           final getter = _getter(e.prefix.name, e.identifier.name);
@@ -467,6 +491,14 @@ extension _Values on CodeIndex {
               null => unknown(),
             },
         ]);
+      case PropertyAccess(
+            realTarget: PrefixedIdentifier(:final prefix, :final identifier),
+            :final propertyName
+          )
+          when _prefixes[env.file.library]?.contains(prefix.name) ?? false:
+        // `prefix.Paths.home` through an import prefix.
+        return _constant(
+            '${identifier.name}.${propertyName.name}', env.file, depth);
       case PropertyAccess():
         final target = e.realTarget;
         if (_enumValue(target, env, depth) case (final type, final value)) {

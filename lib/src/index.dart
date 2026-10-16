@@ -67,11 +67,12 @@ const maxAlternatives = 16;
 const hole = '\u0000';
 
 final _generated =
-    RegExp(r'GENERATED.{0,20}DO NOT MODIFY', caseSensitive: false);
+    RegExp(r'GENERATED[\s\S]{0,80}DO NOT MODIFY', caseSensitive: false);
 
 final _slotName = RegExp(r'^on[A-Z]');
 
-final _upper = RegExp('^[A-Z]');
+/// A class name, private ones included.
+final _upper = RegExp('^_?[A-Z]');
 
 class CodeIndex {
   CodeIndex(this.root);
@@ -114,6 +115,12 @@ class CodeIndex {
   final _stateOf = <String, String>{};
 
   final _routerFields = <String>{};
+
+  /// The type each extension applies to, by extension name.
+  final _extensionOn = <String, String>{};
+
+  /// Import prefixes (`import 'x.dart' as x;`) by library.
+  final _prefixes = <String, Set<String>>{};
   final _typedClasses = <String>{};
 
   final _imports = <String, Set<String>>{};
@@ -125,7 +132,8 @@ class CodeIndex {
   final _candidates =
       <(SourceFile, MethodInvocation, Decl?, String?, String, bool)>[];
 
-  final _enumConstants = <String, (SourceFile, EnumConstantDeclaration)>{};
+  final _enumConstants =
+      <String, (SourceFile, EnumConstantDeclaration, int index)>{};
 
   final _callees = <Ref, List<Decl>>{};
 
@@ -304,6 +312,31 @@ class CodeIndex {
   /// The destination along one chain, substituting forwarded arguments.
   Evaluation destination(NavigationSite site, Chain chain) =>
       _evaluate(site.destination, _envs(chain).last);
+
+  /// What [expression] evaluates to at the end of [chain].
+  Evaluation evaluateAt(Expression expression, Chain chain) =>
+      _evaluate(expression, _envs(chain).last);
+
+  /// Where a go_router_builder route's class is constructed, as in
+  /// `const HomeRoute().location`.
+  List<String> typedUses(RouteDecl route) => [
+        for (final c in _creations[route.typedClass] ?? const <_Creation>[])
+          c.file.at(c.node),
+      ];
+
+  /// The source of the constant a route's path is written with, and where
+  /// that constant is declared when it is known.
+  (String, String?)? pathConstant(RouteDecl route) {
+    final source = switch (route.pathExpression) {
+      final PrefixedIdentifier e => e.toSource(),
+      final PropertyAccess e => e.toSource(),
+      SimpleIdentifier e when _consts.containsKey(e.name) => e.name,
+      _ => null,
+    };
+    if (source == null) return null;
+    final declared = _consts[source]?.singleOrNull;
+    return (source, declared?.$1.at(declared.$2));
+  }
 
   /// The branch index a `goBranch` call passes, when it is a literal.
   int? branchIndex(NavigationSite site, Chain chain) {

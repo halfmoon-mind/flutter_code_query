@@ -14,7 +14,9 @@ extension _Linking on CodeIndex {
           : null;
       final navigates = kind == 'branch' ||
           typed != null ||
-          (receiver == null ? inExtension : _isRouterReceiver(receiver));
+          (receiver == null || receiver is ThisExpression
+              ? inExtension
+              : _isRouterReceiver(receiver));
       if (!navigates) continue;
       navigations.add(NavigationSite(
           file, node, owner, className, typed == null ? kind : 'typed',
@@ -53,7 +55,16 @@ extension _Linking on CodeIndex {
 
   /// Whether the parameter or local [target] names is a BuildContext or a
   /// GoRouter; null when no such declaration is in scope.
-  bool? _declaredRouter(SimpleIdentifier target) {
+  bool? _declaredRouter(SimpleIdentifier target) =>
+      switch (_declaredType(target)) {
+        null => null,
+        final type => _isRouterType(type),
+      };
+
+  /// The declared type of the parameter or local [target] names, or the type
+  /// its initializer suggests; null when no such declaration is in scope.
+  /// A `*builder` closure's first parameter is a BuildContext.
+  String? _declaredType(SimpleIdentifier target) {
     for (AstNode? node = target.parent; node != null; node = node.parent) {
       final parameters = switch (node) {
         FunctionExpression n => n.parameters,
@@ -68,12 +79,14 @@ extension _Linking on CodeIndex {
             : parameter;
         if (formal.name?.lexeme != target.name) continue;
         final type = formal is SimpleFormalParameter ? formal.type : null;
-        if (type != null) return _isRouterType(type.toSource());
+        if (type != null) return type.toSource();
         // Flutter builders pass the BuildContext first: `builder: (ctx) =>`.
         final up = node.parent;
         return i == 0 &&
-            up is NamedExpression &&
-            up.name.label.name.toLowerCase().endsWith('builder');
+                up is NamedExpression &&
+                up.name.label.name.toLowerCase().endsWith('builder')
+            ? 'BuildContext'
+            : '';
       }
       if (node is Block) {
         for (final statement
@@ -81,13 +94,17 @@ extension _Linking on CodeIndex {
           for (final variable in statement.variables.variables) {
             if (variable.name.lexeme != target.name) continue;
             final type = statement.variables.type;
-            if (type != null) return _isRouterType(type.toSource());
+            if (type != null) return type.toSource();
             final value = variable.initializer
                     ?.toSource()
                     .replaceAll(RegExp('[!?]'), '')
                     .toLowerCase() ??
                 '';
-            return value.contains('router') || value.endsWith('context');
+            return value.contains('router')
+                ? 'GoRouter'
+                : value.endsWith('context')
+                    ? 'BuildContext'
+                    : '';
           }
         }
       }
@@ -113,8 +130,15 @@ extension _Linking on CodeIndex {
           return members.where((d) => d.className == superclass).toList();
         }
         if (target != null && target is! ThisExpression) {
-          // `C.m()`, `C().m()` and `getIt<C>().m()` name the class; any other
-          // receiver is untyped.
+          final prefixes = _prefixes[ref.file.library] ?? const <String>{};
+          // `prefix.f()` through an import prefix names a top-level function.
+          if (target is SimpleIdentifier && prefixes.contains(target.name)) {
+            return all
+                .where((d) => d.parent == null && d.className == null)
+                .toList();
+          }
+          // `C.m()`, `C().m()`, `getIt<C>().m()` and `prefix.C.m()` name the
+          // class.
           final type = switch (target) {
             MethodInvocation(target: null, :final methodName)
                 when _upper.hasMatch(methodName.name) =>
@@ -124,10 +148,19 @@ extension _Linking on CodeIndex {
               _typeName(typeArguments.arguments.single.toSource()),
             InstanceCreationExpression(:final constructorName) =>
               _typeName(constructorName.type.toSource()),
+            PrefixedIdentifier(:final prefix, :final identifier)
+                when prefixes.contains(prefix.name) =>
+              identifier.name,
             _ => target.toSource(),
           };
           if (_classes.contains(type)) return inClass(type);
-          if (_external(target)) return const <Decl>[];
+          // Extension members apply by the receiver's type: a BuildContext, a
+          // GoRouter or a class outside the project has no other members here.
+          if (_receiverType(target) case final receiver?) {
+            return members
+                .where((d) => _extensionOn[d.className] == receiver)
+                .toList();
+          }
           return _guess(ref, members);
         }
         for (var o = ref.owner; o != null; o = o.parent) {
@@ -181,9 +214,20 @@ extension _Linking on CodeIndex {
     return result;
   }
 
-  /// A receiver that is a class outside the project, such as `Navigator`,
-  /// `Navigator.of(context)` or `Theme.of(context)`.
-  bool _external(Expression target) {
+  /// The type of a receiver that is not a project class: `BuildContext` for
+  /// `context`, `GoRouter` for `GoRouter.of(context)`, or the class outside the
+  /// project in `Navigator.of(context)` or `Theme`. Null when untyped.
+  String? _receiverType(Expression target) {
+    final source = target.toSource().replaceAll(RegExp('[!?]'), '');
+    final declared =
+        target is SimpleIdentifier ? _declaredType(target) ?? '' : '';
+    if (source.toLowerCase().endsWith('context') ||
+        declared.contains('BuildContext')) {
+      return 'BuildContext';
+    }
+    if (source.contains('GoRouter') || declared.contains('GoRouter')) {
+      return 'GoRouter';
+    }
     final name = switch (target) {
       SimpleIdentifier t => t.name,
       PrefixedIdentifier t => t.prefix.name,
@@ -191,7 +235,9 @@ extension _Linking on CodeIndex {
       MethodInvocation(target: null, :final methodName) => methodName.name,
       _ => null,
     };
-    return name != null && _upper.hasMatch(name) && !_classes.contains(name);
+    return name != null && _upper.hasMatch(name) && !_classes.contains(name)
+        ? name
+        : null;
   }
 
   /// Name-only links: lifecycle methods are the framework's to call, and a

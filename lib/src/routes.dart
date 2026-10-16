@@ -82,6 +82,17 @@ extension _Routes on CodeIndex {
           return;
         }
       }
+      // A route in a list a variable holds belongs where that variable is
+      // used, as in `routes: childRoutes` under several parents.
+      if (needsContext && calls.isEmpty) {
+        final uses = _listUses(creation);
+        if (uses.isNotEmpty) {
+          for (final use in uses) {
+            add(creation, use.file, use.node, env);
+          }
+          return;
+        }
+      }
       add(creation, calls.isEmpty ? creation.file : calls.last.file, at, env);
     }
 
@@ -203,7 +214,6 @@ extension _Routes on CodeIndex {
   /// The `GoRouter` or `RoutingConfig` call holding a top-level route, or else
   /// its top-level declaration: routes in different trees never conflict.
   AstNode? _tree(AstNode node) {
-    AstNode? declaration;
     for (AstNode? up = node.parent; up != null; up = up.parent) {
       final name = switch (up) {
         MethodInvocation m => m.methodName.name,
@@ -212,9 +222,50 @@ extension _Routes on CodeIndex {
         _ => null,
       };
       if (name == 'GoRouter' || name == 'RoutingConfig') return up;
-      if (up is CompilationUnitMember) declaration = up;
     }
-    return declaration;
+    return null;
+  }
+
+  /// Uses of the variable whose list literal holds a route creation as an
+  /// element, outside that variable's own declaration. A local is used only
+  /// in its function.
+  List<Ref> _listUses(_Creation creation) {
+    for (AstNode? up = creation.node.parent; up != null; up = up.parent) {
+      if (up is ListLiteral ||
+          up is SpreadElement ||
+          up is IfElement ||
+          up is ForElement ||
+          up is ParenthesizedExpression) {
+        continue;
+      }
+      if (up is! VariableDeclaration) return const [];
+      final declaration = up;
+      final local = declaration.parent?.parent is VariableDeclarationStatement;
+      final name = declaration.name.lexeme;
+      bool inside(AstNode node) {
+        for (AstNode? a = node; a != null; a = a.parent) {
+          if (identical(a, declaration)) return true;
+        }
+        return false;
+      }
+
+      return [
+        for (final ref in _refs[name] ?? const <Ref>[])
+          if (ref.arguments == null &&
+              !inside(ref.node) &&
+              (local
+                  ? ref.owner == creation.owner
+                  : !name.startsWith('_') ||
+                      ref.file.library == creation.file.library) &&
+              switch (ref.target) {
+                null => true,
+                SimpleIdentifier t => _classes.contains(t.name),
+                _ => false,
+              })
+            ref,
+      ];
+    }
+    return const [];
   }
 
   /// The first route of each branch of each shell route, for
