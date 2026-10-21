@@ -107,9 +107,9 @@ List<_Site> _sites(CodeIndex index) {
   return sites;
 }
 
-/// Registered routes a path reaches, and whether only a location with
-/// unknown parts matched them.
-(List<RouteDecl>, bool templated) _targets(
+/// Registered routes a path reaches, whether the location was templated,
+/// and whether conditional shell branches make the match uncertain.
+(List<RouteDecl>, bool templated, bool alternative) _targets(
     CodeIndex index, NavigationSite site, _Path path) {
   if (site.kind == 'typed') {
     return (
@@ -118,17 +118,23 @@ List<_Site> _sites(CodeIndex index) {
           if (route.typedClass == site.typedClass) route,
       ],
       false,
+      false,
     );
   }
   if (site.kind == 'branch') {
+    final matches = [
+      for (final shell in index.shells)
+        for (final branch in shell)
+          if (branch.route != null &&
+              (path.branch == null ||
+                  (path.branch! >= branch.first &&
+                      (branch.last == null || path.branch! <= branch.last!))))
+            branch,
+    ];
     return (
-      [
-        for (final shell in index.shells)
-          for (final (i, route) in shell.indexed)
-            if (route != null && (path.branch == null || path.branch == i))
-              route,
-      ],
+      [for (final branch in matches) branch.route!],
       false,
+      matches.any((b) => b.conditional),
     );
   }
   final destination = path.destination!;
@@ -142,15 +148,16 @@ List<_Site> _sites(CodeIndex index) {
               : r.name == null && r.nameExpression?.toSource() == source)
           .toList(),
       false,
+      false,
     );
   }
   if (destination.path case final location?) {
-    return (index.routesFor(location), false);
+    return (index.routesFor(location), false, false);
   }
   if (destination.pathPattern case final pattern?) {
-    return (index.routesForPattern(pattern), true);
+    return (index.routesForPattern(pattern), true, false);
   }
-  return (const [], false);
+  return (const [], false, false);
 }
 
 /// What a destination is known to be, alternatives included.
@@ -206,6 +213,11 @@ Map<String, Object?> routeList(CodeIndex index) => {
             'at': route.file.at(route.node),
           },
       ],
+      if (index.skippedLinks > 0) 'skippedLinks': index.skippedLinks,
+      if (index.parseErrors.isNotEmpty)
+        'parseErrors': [
+          for (final e in index.parseErrors) {'at': e.at, 'message': e.message},
+        ],
     };
 
 Map<String, Object?> check(CodeIndex index) {
@@ -225,7 +237,7 @@ Map<String, Object?> check(CodeIndex index) {
     final uncertain = <String>{};
     final unresolved = <String, String?>{};
     for (final path in s.paths) {
-      final (targets, _) = _targets(index, s.site, path);
+      final (targets, _, _) = _targets(index, s.site, path);
       reached.addAll(targets);
       final destination = path.destination;
       if (targets.isNotEmpty || destination == null) continue;
@@ -385,9 +397,10 @@ Map<String, Object?> query(CodeIndex index, String target) {
     String? prefix;
     var dynamic = false;
     for (final p in s.paths) {
-      final (targets, templated) = _targets(index, s.site, p);
+      final (targets, templated, alternative) = _targets(index, s.site, p);
       if (targets.any(registrations.contains)) {
-        candidates.add(_candidate(index, s.site, p, templated));
+        candidates.add(
+            _candidate(index, s.site, p, templated, alternative: alternative));
         continue;
       }
       final destination = p.destination;
@@ -478,7 +491,8 @@ bool _sameShape(String pattern, String path) {
 }
 
 Map<String, Object?> _candidate(
-    CodeIndex index, NavigationSite site, _Path path, bool templated) {
+    CodeIndex index, NavigationSite site, _Path path, bool templated,
+    {bool alternative = false}) {
   final chain = path.chain;
   final build = path.build;
   final first = chain.hops.first;
@@ -506,11 +520,11 @@ Map<String, Object?> _candidate(
         'value': destination.display,
         if (destination.forwarded) 'forwarded': true,
         if (templated) 'templated': true,
-        if (path.alternative) 'alternative': true,
       } else if (site.kind == 'typed')
         'routeClass': site.typedClass
       else
         'branch': path.branch ?? 'any',
+      if (path.alternative || alternative) 'alternative': true,
     },
     'conditions': [
       if (build != null)

@@ -275,9 +275,50 @@ extension _Routes on CodeIndex {
   /// `goBranch(index)`.
   void _registerShells() {
     for (final (file, _, branches) in _shellArguments) {
-      shells.add([
-        for (final element in branches.elements) _branchRoute(file, element),
-      ]);
+      final roots =
+          <({RouteDecl? route, int first, int? last, bool conditional})>[];
+      (int, int?) collect(List<CollectionElement> elements, _Env env, int first,
+          int? last, bool conditional, int depth) {
+        for (final element in elements) {
+          if (element is IfElement) {
+            final yes =
+                collect([element.thenElement], env, first, last, true, depth);
+            final no = collect([
+              if (element.elseElement case final other?) other,
+            ], env, first, last, true, depth);
+            first = yes.$1 < no.$1 ? yes.$1 : no.$1;
+            final a = yes.$2;
+            final b = no.$2;
+            last = a == null || b == null ? null : (a > b ? a : b);
+          } else if (element is SpreadElement) {
+            final list = depth < 4
+                ? _literalOf<ListLiteral>(element.expression, env)
+                : null;
+            if (list == null) {
+              last = null;
+            } else {
+              (first, last) = collect(list.$1.elements, list.$2, first, last,
+                  conditional, depth + 1);
+            }
+          } else if (element is ForElement) {
+            collect([element.body], env, first, null, true, depth);
+            last = null;
+          } else {
+            roots.add((
+              route: _branchRoute(env.file, element),
+              first: first,
+              last: last,
+              conditional: conditional || first != last,
+            ));
+            first++;
+            if (last != null) last++;
+          }
+        }
+        return (first, last);
+      }
+
+      collect(branches.elements, _Env(null, file, const {}), 0, 0, false, 0);
+      shells.add(roots);
     }
   }
 

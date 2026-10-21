@@ -783,18 +783,21 @@ extension _Values on CodeIndex {
     ]);
   }
 
-  /// The one path [paths] agree on, with its `:param` segments unknown.
+  /// Every possible path, with its `:param` segments unknown. Responsive
+  /// router configurations can register one name at different paths.
   Evaluation? _routeTemplate(Iterable<String?> paths) {
     final unique = paths.whereType<String>().toSet();
-    if (unique.length != 1) return null;
-    final segments = unique.single.split('/');
-    return _concat([
-      for (final (i, segment) in segments.indexed) ...[
-        if (i > 0) Evaluation('/', true),
-        segment.startsWith(':')
-            ? Evaluation.unknown(segment, 'dynamic_expression')
-            : Evaluation(segment, true),
-      ],
+    if (unique.isEmpty) return null;
+    return Evaluation.of([
+      for (final path in unique)
+        _concat([
+          for (final (i, segment) in path.split('/').indexed) ...[
+            if (i > 0) Evaluation('/', true),
+            segment.startsWith(':')
+                ? Evaluation.unknown(segment, 'dynamic_expression')
+                : Evaluation(segment, true),
+          ],
+        ]),
     ]);
   }
 

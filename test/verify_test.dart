@@ -22,6 +22,44 @@ void main() {
   List<Object?> symbols(Map candidate) =>
       [for (final h in candidate['hops'] as List) (h as Map)['symbol']];
 
+  test('keeps same-name project callers separate from router calls', () {
+    final index = project({
+      'app.dart': r'''
+final router = GoRouter(routes: [GoRoute(path: '/a'), GoRoute(path: '/b')]);
+class First {
+  void go(BuildContext context) => context.push('/a');
+}
+class Second {
+  void go(BuildContext context) => context.push('/b');
+}
+class Menu {
+  Widget build(BuildContext context) => Column(children: [
+    T(onTap: () => First().go(context)),
+    T(onTap: () => Second().go(context)),
+    T(onTap: () => First().go(context)),
+    T(onTap: () => context.go('/a')),
+  ]);
+}
+''',
+    });
+    final first = candidates(index, '/a');
+    expect([
+      for (final c in first) symbols(c)
+    ], [
+      ['Menu.build', 'First.go'],
+      ['Menu.build', 'First.go'],
+      ['Menu.build'],
+    ]);
+    expect([for (final c in first) (c['root'] as Map)['at']],
+        ['lib/app.dart:10', 'lib/app.dart:12', 'lib/app.dart:13']);
+    expect([
+      for (final c in candidates(index, '/b')) symbols(c)
+    ], [
+      ['Menu.build', 'Second.go'],
+    ]);
+    expect(candidates(index, '/a'), first);
+  });
+
   test('follows every caller of a helper that forwards the destination', () {
     final index = project({
       'app.dart': r'''

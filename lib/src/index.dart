@@ -85,8 +85,10 @@ class CodeIndex {
 
   final navigations = <NavigationSite>[];
 
-  /// Each `StatefulShellRoute`'s branches, as the first route of each.
-  final shells = <List<RouteDecl?>>[];
+  /// Each shell's branch roots and possible indices. Conditional elements
+  /// can shift later indices; an unknown spread leaves the upper bound open.
+  final shells =
+      <List<({RouteDecl? route, int first, int? last, bool conditional})>>[];
 
   /// The first syntax error per file. Such a file is only partly indexed, for
   /// example when the app uses newer Dart syntax than this package's analyzer
@@ -508,11 +510,20 @@ class CodeIndex {
     return outer == null ? null : (outer.$1, outer.$2);
   }
 
-  List<(Ref, int)> callersOf(Decl decl) => _callers[decl] ??= [
-        for (final ref in _refs[decl.name] ?? const <Ref>[])
-          if (_calleesOf(ref) case final callees when callees.contains(decl))
-            (ref, callees.length),
-      ];
+  List<(Ref, int)> callersOf(Decl decl) {
+    if (_callers[decl] case final cached?) return cached;
+    // Resolve a name's references once for all declarations sharing it.
+    for (final d in _decls[decl.name] ?? const <Decl>[]) {
+      _callers[d] = [];
+    }
+    for (final ref in _refs[decl.name] ?? const <Ref>[]) {
+      final callees = _calleesOf(ref);
+      for (final callee in callees.toSet()) {
+        (_callers[callee] ??= []).add((ref, callees.length));
+      }
+    }
+    return _callers[decl] ??= [];
+  }
 
   /// Untyped calls left unlinked because too many declarations share the
   /// name; any of them may call [decl].

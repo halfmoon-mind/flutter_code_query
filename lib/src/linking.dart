@@ -6,6 +6,7 @@ extension _Linking on CodeIndex {
   /// calls are go_router's methods, so they never link to a project
   /// declaration that happens to share the name.
   void _resolveNavigations() {
+    final nodesByName = <String, Set<AstNode>>{};
     for (final (file, node, owner, className, kind, inExtension)
         in _candidates) {
       final receiver = node.realTarget;
@@ -21,7 +22,10 @@ extension _Linking on CodeIndex {
       navigations.add(NavigationSite(
           file, node, owner, className, typed == null ? kind : 'typed',
           typedClass: typed));
-      _refs[node.methodName.name]?.removeWhere((r) => identical(r.node, node));
+      (nodesByName[node.methodName.name] ??= {}).add(node);
+    }
+    for (final MapEntry(:key, :value) in nodesByName.entries) {
+      _refs[key]?.removeWhere((r) => value.contains(r.node));
     }
   }
 

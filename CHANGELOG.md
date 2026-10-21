@@ -1,3 +1,15 @@
+## 0.1.2
+
+- Keep alternative paths when responsive router configurations register the
+  same route name, including `namedLocation` calls passed through widgets.
+- Expand shell branch spreads and collection conditions for `goBranch`,
+  marking uncertain branch matches as alternatives.
+- Expose parse errors and skipped links in `routes`, so partial indexes are
+  visible in every command.
+- Cache caller resolution per name and remove router references in batches.
+- Simplify the README and separate the reference, agent instructions and
+  real GitHub snapshot validation into `doc/`.
+
 ## 0.1.1
 
 - Evaluate map entries by key (`titles[key]`) in constants, static fields and
