@@ -262,6 +262,67 @@ class W extends StatelessWidget {
     expect(unknown['severity'], 'info');
   });
 
+  test('keeps defaults on annotated, field and super parameters', () {
+    final defaults = project({
+      'app.dart': r'''
+final router = GoRouter(routes: [SettingsRoute()]);
+
+class SettingsRoute extends GoRoute {
+  SettingsRoute({super.path = '/settings', super.name = 'settings'});
+}
+
+void open(BuildContext context,
+    [@Deprecated('Use openNamed') String path = '/settings']) => context.go(path);
+void openNamed(BuildContext context, {String path = '/settings'}) => context.go(path);
+
+class Tile extends StatelessWidget {
+  const Tile({this.path = '/settings'});
+  final String path;
+  Widget build(BuildContext context) => T(onTap: () => context.go(path));
+}
+
+class Home extends StatelessWidget {
+  Widget build(BuildContext context) => Column(children: [
+    const Tile(),
+    T(onTap: () => open(context)),
+    T(onTap: () => openNamed(context)),
+  ]);
+}
+''',
+    });
+    expect(defaults.parseErrors, isEmpty);
+    expect((routeList(defaults)['routes'] as List).single,
+        containsPair('path', '/settings'));
+    final found = candidates(defaults, 'settings');
+    expect(found, hasLength(3));
+    for (final candidate in found) {
+      expect(candidate['destination'], containsPair('value', '/settings'));
+    }
+    expect(check(defaults)['findings'], isEmpty);
+  });
+
+  test(
+      'binds function-typed callbacks without treating return types as routers',
+      () {
+    final callbacks = project({
+      'app.dart': r'''
+final router = GoRouter(routes: [GoRoute(path: '/settings')]);
+
+class Home extends StatelessWidget {
+  Widget build(BuildContext context) => _button(() => context.go('/settings'));
+  Widget _button(void onTap()) => T(onTap: onTap);
+}
+
+void unrelated(BuildContext receiver()) => receiver.go('/missing');
+''',
+    });
+    expect(callbacks.parseErrors, isEmpty);
+    expect(candidates(callbacks, '/settings').single['root'],
+        containsPair('slot', 'onTap'));
+    expect(callbacks.navigations, hasLength(1));
+    expect(check(callbacks)['findings'], isEmpty);
+  });
+
   test('reads a malformed file instead of crashing', () {
     final broken = project({
       'ok.dart': "final router = GoRouter(routes: [GoRoute(path: '/ok')]);",

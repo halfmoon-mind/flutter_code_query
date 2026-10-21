@@ -86,6 +86,8 @@ Redirects and deep links are outside the incoming candidate chains. Read the
 
 ## Documentation
 
+- [Runnable example](example/example.dart): index sample source and print
+  routes, incoming candidates and check findings with the Dart API.
 - [Reference](doc/reference.md): JSON output, supported patterns, checks,
   limits and version compatibility.
 - [Coding agent instructions](doc/agent-instructions.md): a block to copy

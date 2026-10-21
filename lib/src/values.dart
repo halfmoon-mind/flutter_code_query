@@ -23,8 +23,7 @@ extension _Values on CodeIndex {
   /// defaults for omitted ones, and the remaining omitted ones known to be
   /// null. A tear-off ([argumentList] null) binds nothing.
   _Env _call(ArgumentList? argumentList, Decl callee, _Env env) {
-    final arguments = argumentList?.arguments ?? const <Expression>[];
-    final positional = arguments.where((a) => a is! NamedExpression).toList();
+    final positional = _positional(argumentList).toList();
     final bound = <String, (Expression, _Env)>{};
     final absent = <String>{};
     var i = 0;
@@ -40,8 +39,7 @@ extension _Values on CodeIndex {
       if (callee._scope.reassigned.contains(name) || argumentList == null) {
         continue;
       }
-      final fallback =
-          parameter is DefaultFormalParameter ? parameter.defaultValue : null;
+      final fallback = _defaultValue(parameter);
       if (value != null) {
         bound[name] = (value, env);
       } else if (fallback != null) {
@@ -72,17 +70,16 @@ extension _Values on CodeIndex {
     if (constructor == null) {
       // An extension type's representation field takes the one argument.
       final field = _representations[className];
-      final value = arguments?.arguments.singleOrNull;
-      return field == null || value == null || value is NamedExpression
-          ? const {}
-          : {field: (value, env)};
+      final value = arguments?.arguments.length == 1
+          ? _positional(arguments).singleOrNull
+          : null;
+      return field == null || value == null ? const {} : {field: (value, env)};
     }
     final inner = _call(arguments, constructor, env);
     final node = constructor.node as ConstructorDeclaration;
     final fields = <String, (Expression, _Env)>{};
     for (final parameter in node.parameters.parameters) {
-      final formal =
-          parameter is DefaultFormalParameter ? parameter.parameter : parameter;
+      final formal = _formal(parameter);
       if (formal is FieldFormalParameter) {
         if (inner.arguments[formal.name.lexeme] case final bound?) {
           fields[formal.name.lexeme] = bound;
@@ -671,13 +668,13 @@ extension _Values on CodeIndex {
           when _upper.hasMatch(e.methodName.name) &&
               e.methodName.name != 'Uri' &&
               e.argumentList.arguments.length == 1 &&
-              e.argumentList.arguments.single is! NamedExpression:
+              _positional(e.argumentList).isNotEmpty:
         // A wrapper such as `RouteInfo('/home')`.
-        return _evaluate(e.argumentList.arguments.single, env, depth + 1);
+        return _evaluate(_positional(e.argumentList).single, env, depth + 1);
       case InstanceCreationExpression()
           when e.argumentList.arguments.length == 1 &&
-              e.argumentList.arguments.single is! NamedExpression:
-        return _evaluate(e.argumentList.arguments.single, env, depth + 1);
+              _positional(e.argumentList).isNotEmpty:
+        return _evaluate(_positional(e.argumentList).single, env, depth + 1);
       case MethodInvocation(:final target?)
           when e.methodName.name == 'toString':
         // `Uri(path: '/search', queryParameters: {...}).toString()`.
@@ -771,9 +768,7 @@ extension _Values on CodeIndex {
   /// `namedLocation('name', pathParameters: ...)`: the path registered for
   /// that name, with its parameters unknown.
   Evaluation? _namedLocation(MethodInvocation e, _Env env, int depth) {
-    final first = e.argumentList.arguments
-        .where((a) => a is! NamedExpression)
-        .firstOrNull;
+    final first = _positional(e.argumentList).firstOrNull;
     if (first == null) return null;
     final name = _evaluate(first, env, depth + 1);
     if (!name.complete) return null;
@@ -826,9 +821,12 @@ extension _Values on CodeIndex {
       _ => null,
     };
     if (body is! RecordLiteral) return null;
-    for (final field in body.fields.whereType<NamedExpression>()) {
-      if (field.name.label.name == e.identifier.name) {
-        return (field.expression, _Env.constant(creation!.$1, null));
+    for (final field in body.fields) {
+      if (_argumentName(field) == e.identifier.name) {
+        return (
+          field.childEntities.whereType<Expression>().last,
+          _Env.constant(creation!.$1, null),
+        );
       }
     }
     return null;

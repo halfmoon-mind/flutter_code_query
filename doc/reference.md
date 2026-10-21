@@ -16,7 +16,7 @@ To manage the tool through your app's dependencies, add it to `pubspec.yaml`:
 
 ```yaml
 dev_dependencies:
-  flutter_code_query: ^0.1.2
+  flutter_code_query: ^0.1.3
 ```
 
 Run commands from the app root with `dart run flutter_code_query`:
@@ -305,7 +305,8 @@ each finding. A usage error or a missing `lib/` exits 2.
 ## Version compatibility
 
 The tool does not depend on Flutter, so the app's Flutter version needs no
-pinning. It runs on Dart 3.5 or later with `analyzer` 7.6 to 12; pub picks the
-newest your SDK allows, and analyzer 12 (Dart 3.9+) parses dot shorthands.
-Syntax newer than that analyzer, such as Dart 3.13 primary constructors,
-shows up as `parse_error` findings instead of being dropped silently.
+pinning. It runs on Dart 3.5 or later with `analyzer` 7.6 to 14; pub picks the
+newest your SDK allows. Analyzer 12 (Dart 3.9+) parses dot shorthands, and
+analyzer 14.6 requires Dart 3.13 or later. Syntax newer than the selected
+analyzer supports shows up as `parse_error` findings instead of being
+dropped silently.

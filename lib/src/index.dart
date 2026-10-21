@@ -533,11 +533,38 @@ class CodeIndex {
       ].length;
 }
 
+// Analyzer 13 split named arguments and record fields from expressions.
+// Their name-colon tokens and value children are stable across versions.
+String? _argumentName(AstNode? node) =>
+    node?.beginToken.next?.lexeme == ':' ? node!.beginToken.lexeme : null;
+
+Iterable<Expression> _positional(ArgumentList? arguments) =>
+    (arguments?.arguments ?? const <AstNode>[])
+        .whereType<Expression>()
+        .where((a) => _argumentName(a) == null);
+
 Expression? _named(ArgumentList? arguments, String name) => arguments?.arguments
-    .whereType<NamedExpression>()
-    .where((a) => a.name.label.name == name)
+    .where((a) => _argumentName(a) == name)
     .firstOrNull
-    ?.expression;
+    ?.childEntities
+    .whereType<Expression>()
+    .lastOrNull;
+
+// Before analyzer 13, optional parameters wrap their underlying formal.
+FormalParameter _formal(FormalParameter parameter) =>
+    parameter.childEntities.whereType<FormalParameter>().firstOrNull ??
+    parameter;
+
+Expression? _defaultValue(FormalParameter parameter) {
+  for (final child in parameter.childEntities) {
+    if (child is Expression) return child;
+    if (child is AstNode &&
+        const {'=', ':'}.contains(child.beginToken.lexeme)) {
+      return child.childEntities.whereType<Expression>().firstOrNull;
+    }
+  }
+  return null;
+}
 
 Token _afterConst(Token token) => token.lexeme == 'const' ? token.next! : token;
 

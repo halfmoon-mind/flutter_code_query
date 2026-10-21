@@ -109,9 +109,8 @@ class NavigationSite {
   bool get named => kind == 'name';
 
   /// The location or name argument; the route object for a `typed` call.
-  Expression get destination => kind == 'typed'
-      ? node.realTarget!
-      : node.argumentList.arguments.firstWhere((a) => a is! NamedExpression);
+  Expression get destination =>
+      kind == 'typed' ? node.realTarget! : _positional(node.argumentList).first;
 }
 
 class RouteDecl {

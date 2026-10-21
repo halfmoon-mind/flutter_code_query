@@ -180,8 +180,7 @@ class _Collector extends RecursiveAstVisitor<void> {
         (target is SimpleIdentifier && _shells.contains(target.name))) {
       _shell(node, node.argumentList);
     }
-    final positional =
-        node.argumentList.arguments.any((a) => a is! NamedExpression);
+    final positional = _positional(node.argumentList).isNotEmpty;
     final kind = _locationMethods.contains(name)
         ? 'location'
         : _nameMethods.contains(name)
@@ -299,7 +298,7 @@ String? _variableType(TypeAnnotation? type, Expression? initializer) {
 }
 
 /// Names declared inside a declaration, including nested closures.
-class _Scope extends RecursiveAstVisitor<void> {
+class _Scope extends GeneralizingAstVisitor<void> {
   final parameters = <String>{};
   final locals = <String>{};
   final reassigned = <String>{};
@@ -325,25 +324,11 @@ class _Scope extends RecursiveAstVisitor<void> {
     }
   }
 
-  void _parameter(Token? name) {
-    if (name != null) locals.add(name.lexeme);
+  @override
+  void visitFormalParameter(FormalParameter node) {
+    if (node.name case final name?) locals.add(name.lexeme);
+    _defaultValue(node)?.accept(this);
   }
-
-  @override
-  void visitSimpleFormalParameter(SimpleFormalParameter node) =>
-      _parameter(node.name);
-
-  @override
-  void visitFieldFormalParameter(FieldFormalParameter node) =>
-      _parameter(node.name);
-
-  @override
-  void visitSuperFormalParameter(SuperFormalParameter node) =>
-      _parameter(node.name);
-
-  @override
-  void visitFunctionTypedFormalParameter(FunctionTypedFormalParameter node) =>
-      _parameter(node.name);
 
   @override
   void visitVariableDeclaration(VariableDeclaration node) {

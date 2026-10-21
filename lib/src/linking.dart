@@ -78,17 +78,20 @@ extension _Linking on CodeIndex {
       };
       for (final (i, parameter)
           in (parameters?.parameters ?? const <FormalParameter>[]).indexed) {
-        final formal = parameter is DefaultFormalParameter
-            ? parameter.parameter
-            : parameter;
+        final formal = _formal(parameter);
         if (formal.name?.lexeme != target.name) continue;
-        final type = formal is SimpleFormalParameter ? formal.type : null;
+        final functionTyped =
+            const {'(', '<'}.contains(formal.name?.next?.lexeme);
+        final type = formal is FieldFormalParameter ||
+                formal is SuperFormalParameter ||
+                functionTyped
+            ? null
+            : formal.childEntities.whereType<TypeAnnotation>().firstOrNull;
         if (type != null) return type.toSource();
         // Flutter builders pass the BuildContext first: `builder: (ctx) =>`.
         final up = node.parent;
         return i == 0 &&
-                up is NamedExpression &&
-                up.name.label.name.toLowerCase().endsWith('builder')
+                (_argumentName(up)?.toLowerCase().endsWith('builder') ?? false)
             ? 'BuildContext'
             : '';
       }
@@ -369,11 +372,11 @@ extension _Linking on CodeIndex {
           ? parent!
           : node;
       final (value, up) = _receiver(bound);
-      final slot = switch (up) {
-        NamedExpression n => n.name.label.name,
-        ArgumentList list => _parameterName(list, value),
-        _ => null,
-      };
+      final slot = _argumentName(up) ??
+          switch (up) {
+            ArgumentList list => _parameterName(list, value),
+            _ => null,
+          };
       if (slot != null && _slotName.hasMatch(slot)) {
         final kind = node is MethodInvocation ? 'callback_factory' : 'callback';
         return (node, slot, kind);
@@ -384,8 +387,7 @@ extension _Linking on CodeIndex {
 
   /// The callee parameter a positional argument binds to.
   String? _parameterName(ArgumentList list, AstNode value) {
-    final positional =
-        list.arguments.where((a) => a is! NamedExpression).toList();
+    final positional = _positional(list).toList();
     final position = positional.indexWhere((a) => identical(a, value));
     if (position < 0) return null;
     final invocation = list.parent;

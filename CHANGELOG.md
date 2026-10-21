@@ -1,3 +1,11 @@
+## 0.1.3
+
+- Support analyzer 13 and 14 while keeping Dart 3.5 and analyzer 7.6
+  compatibility. Preserve named arguments, record fields, parameter defaults
+  and callback binding across the analyzer AST changes.
+- Add a runnable Dart API example for listing routes, querying incoming
+  navigation candidates and checking navigation findings.
+
 ## 0.1.2
 
 - Keep alternative paths when responsive router configurations register the

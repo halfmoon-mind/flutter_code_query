@@ -371,9 +371,7 @@ extension _Routes on CodeIndex {
     if (superclass == 'GoRoute') {
       // `super.path` forwards the argument of the same name.
       for (final parameter in node.parameters.parameters) {
-        final formal = parameter is DefaultFormalParameter
-            ? parameter.parameter
-            : parameter;
+        final formal = _formal(parameter);
         if (formal is! SuperFormalParameter) continue;
         final bound = inner.arguments[formal.name.lexeme];
         if (formal.name.lexeme == 'path') path ??= bound;
